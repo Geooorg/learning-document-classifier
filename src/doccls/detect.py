@@ -102,6 +102,17 @@ def _sieht_aus_wie_mail(data: bytes) -> bool:
 
     Danach müssen mindestens zwei **verschiedene bekannte** Felder vorkommen. Sonst wäre
     jede Konfigurationsdatei, die mit „name: …“ beginnt, eine E-Mail.
+
+    Bekannte, bewusst offen gelassene Grenzen (belegt, nicht vermutet): Ein Text, der mit
+    „From …“ beginnt und später ``Date:``/``To:`` im **Rumpf** führt, wird als Mail gelesen
+    (``MBOX_LINE`` verlangt keine echte mbox-Syntax, und gezählt wird im ganzen Fenster
+    statt nur im zusammenhängenden Kopfblock). Ein roher HTTP-Antwortkopf ohne Statuszeile
+    ebenso, über ``Content-Type:`` + ``Date:``. Umgekehrt fällt eine Mail durch, deren erste
+    zwei bekannten Felder hinter mehr als 16 Zeilen Zustellkette oder ``X-``-Kopfzeilen
+    liegen. Das ist hingenommen: In der Praxis tragen Mails die Endung ``.eml`` und werden
+    über den Rückfall unten erkannt; diese Prüfung ist nur die Zusatzspur für Dateien ohne
+    verlässliche Endung. Eine tragfähige Regel bräuchte den Kopfblock bis zur Leerzeile und
+    mailspezifische Pflichtfelder – nachzuholen, wenn echte Bestände es verlangen.
     """
     kopf = _ohne_bom(data[:2048])
     zeilen = [z for z in kopf.splitlines()[:16] if z.strip()]
