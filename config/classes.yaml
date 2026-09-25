@@ -1,0 +1,68 @@
+version: 1
+classes:
+  - key: RECHNUNG
+    name: Rechnung
+    description: >
+      Zahlungsaufforderung eines Lieferanten. Enthält Rechnungsnummer, Rechnungsdatum,
+      Positionen mit Einzel- und Gesamtbetrag, Umsatzsteuerausweis und ein Zahlungsziel.
+      Der Gesamtbetrag ist positiv und wird vom Empfänger geschuldet.
+    not: >
+      Keine Gutschrift (negativer Betrag oder Bezug auf eine stornierte Rechnung),
+      kein Lieferschein (keine Beträge), kein Angebot (Leistung noch nicht erbracht).
+
+  - key: GUTSCHRIFT
+    name: Gutschrift
+    description: >
+      Korrektur einer früheren Rechnung zugunsten des Empfängers. Nennt die Nummer der
+      ursprünglichen Rechnung, einen negativen Betrag oder einen Erstattungsbetrag und
+      einen Grund wie Storno, Mängelrüge oder Rücksendung.
+    not: >
+      Keine Rechnung (dort wird gefordert, nicht erstattet), keine Mahnung.
+
+  - key: VERTRAG
+    name: Vertrag
+    description: >
+      Individuelle Vereinbarung zwischen benannten Parteien. Nennt die Vertragsparteien
+      namentlich, einen Vertragsgegenstand, Laufzeit oder Beginn, Vergütung sowie
+      Kündigungsregelungen, und sieht Unterschriften beider Seiten vor.
+    not: >
+      Keine AGB (die gelten einseitig und ohne namentliche Gegenpartei), keine Rechnung.
+
+  - key: AGB
+    name: Allgemeine Geschäftsbedingungen
+    description: >
+      Vorformulierte Bedingungen, die ein Anbieter einseitig für eine Vielzahl von
+      Verträgen stellt. Durchnummerierte Paragraphen zu Geltungsbereich, Vertragsschluss,
+      Preisen, Haftung, Gewährleistung, Datenschutz und Gerichtsstand. Keine namentlich
+      genannte Gegenpartei, keine Unterschriftenzeile.
+    not: >
+      Kein Vertrag (dort stehen konkrete Parteien und eine Unterschrift),
+      keine Datenschutzerklärung als eigenständiges Dokument.
+
+  - key: STATUSBERICHT
+    name: Statusbericht
+    description: >
+      Periodischer Bericht über den Stand eines Vorhabens. Nennt einen Berichtszeitraum,
+      eine Ampel- oder Fortschrittsbewertung, erreichte Meilensteine, offene Punkte,
+      Risiken und den Ausblick auf die nächste Periode.
+    not: >
+      Kein Protokoll (dort gibt es Teilnehmer, Tagesordnungspunkte und Beschlüsse einer
+      konkreten Sitzung).
+
+  - key: PROTOKOLL
+    name: Protokoll
+    description: >
+      Mitschrift einer konkreten Sitzung. Nennt Datum, Ort und Teilnehmerliste, gliedert
+      sich in Tagesordnungspunkte und hält je Punkt Beschluss, Verantwortlichen und Termin
+      fest.
+    not: >
+      Kein Statusbericht (dort gibt es keine Teilnehmer und keine Beschlüsse einer Sitzung).
+
+  - key: SONSTIGES
+    name: Sonstiges
+    residual: true
+    description: >
+      Alles, was keiner der übrigen Klassen entspricht — etwa Anschreiben, Lieferscheine,
+      Werbesendungen, Bedienungsanleitungen oder Bescheinigungen.
+    not: >
+      Diese Klasse wird nicht trainiert, sondern durch Ablehnung erreicht (Konzept § 7.4).
