@@ -1,13 +1,25 @@
 """Extraktion arbeitet auf Bytes, nicht auf Pfaden – prüfbar ohne Dateien auf der Platte."""
 
+import io
+import re
+import zipfile
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+import docx
+import openpyxl
+import pymupdf
 import pytest
 
 from doccls.config import RAW_DIR
 from doccls.extraction import extract
-from doccls.models import Document, SegmentKind
+from doccls.extraction.pdf import heading_by_font_size
+from doccls.models import Document, SegmentKind, normalize_text
+
+MEDIA_TYPE_PDF = "application/pdf"
+MEDIA_TYPE_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+MEDIA_TYPE_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def dokument(pfad: Path, media_type: str) -> tuple[Document, bytes]:
@@ -20,6 +32,15 @@ def dokument(pfad: Path, media_type: str) -> tuple[Document, bytes]:
     ), daten
 
 
+def dokument_aus_bytes(daten: bytes, dateiname: str, media_type: str) -> Document:
+    return Document.create(
+        source_path=dateiname,
+        media_type=media_type,
+        content=daten,
+        ingested_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
 def erste(ordner: str) -> Path:
     dateien = sorted((RAW_DIR / ordner).glob(f"*.{ordner}"))
     assert dateien, f"Keine Testdaten in {RAW_DIR / ordner}"
@@ -27,7 +48,7 @@ def erste(ordner: str) -> Path:
 
 
 def test_pdf_ergibt_ein_segment_je_seite() -> None:
-    doc, daten = dokument(erste("pdf"), "application/pdf")
+    doc, daten = dokument(erste("pdf"), MEDIA_TYPE_PDF)
     segmente = extract(doc, daten)
     assert segmente
     assert all(s.kind is SegmentKind.SEITE for s in segmente)
@@ -41,10 +62,8 @@ def test_pdf_erfasst_alle_seiten() -> None:
     Fundstelle, beides bliebe auch bei einem einzigen erfassten Segment wahr. Deshalb wird
     hier zusätzlich gegen die tatsächliche Seitenzahl der Quelle geprüft.
     """
-    import pymupdf
-
     pfad = erste("pdf")
-    doc, daten = dokument(pfad, "application/pdf")
+    doc, daten = dokument(pfad, MEDIA_TYPE_PDF)
     segmente = extract(doc, daten)
     with pymupdf.open(stream=daten, filetype="pdf") as pdf:
         seitenzahl = len(pdf)
@@ -52,20 +71,145 @@ def test_pdf_erfasst_alle_seiten() -> None:
     assert len(segmente) == seitenzahl
 
 
+def test_pdf_segmenttext_deckt_gesamten_seitentext_ab() -> None:
+    """Eine Kürzung wie ``normalize_text(...)[:60]`` änderte weder Segmentzahl noch
+    Indexfolge noch den ersten Locator – alles, was die übrigen Tests prüfen. Deshalb wird
+    hier die Zeichenzahl der Quelle (unabhängig, aber mit derselben Normalisierung wie die
+    Extraktion, gemessen) gegen die Summe über alle Segmenttexte geprüft.
+    """
+    pfad = erste("pdf")
+    doc, daten = dokument(pfad, MEDIA_TYPE_PDF)
+    segmente = extract(doc, daten)
+    with pymupdf.open(stream=daten, filetype="pdf") as pdf:
+        erwartete_laenge = sum(
+            len(text) for seite in pdf if (text := normalize_text(seite.get_text("text")))
+        )
+    assert erwartete_laenge > 60, "Testdatei liefert zu wenig Text – Prüfung liefe leer"
+    assert sum(len(s.text) for s in segmente) == erwartete_laenge
+
+
+def test_heading_by_font_size_erkennt_deutlich_groessere_schrift() -> None:
+    """``MIN_HEADING_SIZE_RATIO`` und die Median-Berechnung des Fließtexts haben bisher
+    keinen einzigen Test: Eine Stilllegung (z. B. ein unerreichbar hoher Schwellwert)
+    ließe jede Überschrift zu ``None`` werden, ohne dass eine Prüfung auf Segmentzahl oder
+    -reihenfolge das bemerken würde.
+    """
+    with pymupdf.open() as pdf:
+        seite = pdf.new_page()
+        seite.insert_text((72, 100), "Titelzeile Rechnung", fontsize=24)
+        for i in range(5):
+            seite.insert_text((72, 150 + i * 15), f"Fliesstext Zeile {i} mit Inhalt.", fontsize=10)
+        ergebnis = heading_by_font_size(seite)
+    assert ergebnis == "Titelzeile Rechnung"
+
+
+def test_heading_by_font_size_ignoriert_leichten_groessenunterschied() -> None:
+    """Der Schwellwert greift erst ab einem deutlichen Unterschied zum (über den Median
+    bestimmten) Fließtext – knapp darüber reicht nicht, sonst würde jede zufällig etwas
+    größere Zeile fälschlich zur Überschrift.
+    """
+    with pymupdf.open() as pdf:
+        seite = pdf.new_page()
+        seite.insert_text((72, 100), "Fast wie Fliesstext", fontsize=11.3)
+        for i in range(5):
+            seite.insert_text((72, 150 + i * 15), f"Fliesstext Zeile {i} mit Inhalt.", fontsize=10)
+        ergebnis = heading_by_font_size(seite)
+    assert ergebnis is None
+
+
+def test_heading_by_font_size_ignoriert_lange_zeilen() -> None:
+    """``MAX_HEADING_LENGTH`` schließt Fließtext aus, der zufällig groß gesetzt ist (etwa
+    ein hervorgehobener Absatz) – lang und groß ist kein Widerspruch, aber keine
+    Überschrift.
+    """
+    with pymupdf.open() as pdf:
+        seite = pdf.new_page(width=2000, height=400)
+        lang = (
+            "Eine sehr lange Ueberschriftenzeile die eindeutig laenger ist als achtzig "
+            "Zeichen insgesamt und auf einer Zeile bleibt"
+        )
+        seite.insert_text((72, 100), lang, fontsize=24)
+        for i in range(5):
+            seite.insert_text((72, 150 + i * 15), f"Fliesstext Zeile {i} mit Inhalt.", fontsize=10)
+        ergebnis = heading_by_font_size(seite)
+    assert ergebnis is None
+
+
 def test_docx_liefert_abschnitte_mit_ueberschriften() -> None:
-    doc, daten = dokument(
-        erste("docx"),
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
+    doc, daten = dokument(erste("docx"), MEDIA_TYPE_DOCX)
     segmente = extract(doc, daten)
     assert any(s.heading for s in segmente)
     assert all(s.kind is SegmentKind.ABSCHNITT for s in segmente)
 
 
-def test_xlsx_liefert_ein_segment_je_blatt() -> None:
-    doc, daten = dokument(
-        erste("xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+def test_docx_segmenttext_deckt_alle_absaetze_ab() -> None:
+    """``absaetze[:] = [text]`` ließe je Abschnitt nur den letzten Absatz übrig –
+    Segmentzahl, Überschriften und Segmentart blieben unverändert, nur der Inhalt
+    schrumpft. Geprüft wird deshalb die Zeichenzahl der einzeln gezählten, nicht aus
+    Überschriften stammenden Absätze gegen die Summe der (nicht aus Tabellen stammenden)
+    Abschnittstexte: Da ``normalize_text`` die Absätze eines Abschnitts nur durch je ein
+    Leerzeichen verbindet, kann die Summe der Segmenttexte nie kleiner sein als die Summe
+    der Absätze – außer es geht unterwegs einer verloren.
+    """
+    pfad = erste("docx")
+    doc, daten = dokument(pfad, MEDIA_TYPE_DOCX)
+    segmente = extract(doc, daten)
+
+    quelle = docx.Document(io.BytesIO(daten))
+    absatz_texte = []
+    for absatz in quelle.paragraphs:
+        text = absatz.text.strip()
+        if not text:
+            continue
+        stil = absatz.style.name if absatz.style is not None else None
+        if stil is not None and stil.startswith("Heading"):
+            continue
+        absatz_texte.append(text)
+
+    abschnitts_segmente = [s for s in segmente if not s.locator.startswith("Tabelle")]
+    assert len(absatz_texte) > len(abschnitts_segmente), (
+        "Testdatei bietet keine Mehrfach-Absatz-Abschnitte – Prüfung liefe leer"
     )
+    erwartete_mindestlaenge = sum(len(text) for text in absatz_texte)
+    assert sum(len(s.text) for s in abschnitts_segmente) >= erwartete_mindestlaenge
+
+
+def test_docx_tabellen_ergeben_je_ein_segment() -> None:
+    """Eine leer laufende Tabellenschleife fiele nicht durch die Segmentzahl allein auf,
+    solange das Dokument auch Absatzabschnitte enthält. Geprüft wird deshalb die Anzahl
+    der Tabellen in der Quelle gegen die Anzahl der Tabellensegmente.
+    """
+    pfad = RAW_DIR / "docx" / "GUTSCHRIFT-bonus-00.docx"
+    assert pfad.exists(), f"{pfad} fehlt – erst den Generator laufen lassen"
+    doc, daten = dokument(pfad, MEDIA_TYPE_DOCX)
+
+    quelle = docx.Document(io.BytesIO(daten))
+    assert quelle.tables, "Testdatei enthält keine Tabelle – Prüfung liefe leer"
+
+    segmente = extract(doc, daten)
+    tabellen_segmente = [s for s in segmente if s.locator.startswith("Tabelle")]
+    assert len(tabellen_segmente) == len(quelle.tables)
+
+
+def test_docx_tabelle_ohne_text_erzeugt_kein_segment() -> None:
+    """``" | ".join`` über leere Zellen ergibt immer Trennzeichen (``"| | | |"`` ist nicht
+    leer) – der Wächter ``if text:`` konnte deshalb nie greifen. Layout-Tabellen ohne
+    Inhalt sind in echten Word-Briefen der Normalfall.
+    """
+    quelle = docx.Document()
+    quelle.add_paragraph("Sehr geehrte Damen und Herren,")
+    quelle.add_table(rows=2, cols=3)
+    puffer = io.BytesIO()
+    quelle.save(puffer)
+    daten = puffer.getvalue()
+    doc = dokument_aus_bytes(daten, "brief.docx", MEDIA_TYPE_DOCX)
+
+    segmente = extract(doc, daten)
+    assert not any(s.locator.startswith("Tabelle") for s in segmente)
+
+
+def test_xlsx_liefert_ein_segment_je_blatt() -> None:
+    doc, daten = dokument(erste("xlsx"), MEDIA_TYPE_XLSX)
     segmente = extract(doc, daten)
     assert segmente
     assert all(s.kind is SegmentKind.BLATT for s in segmente)
@@ -79,11 +223,9 @@ def test_tabellenzeile_bleibt_als_einheit_beisammen() -> None:
     Suche nach "EUR" im zusammengefügten Gesamttext wäre auch dann wahr, wenn jede Zelle
     ein eigenes Segment bekäme – also genau im Fehlerfall.
     """
-    import re
-
     pfad = RAW_DIR / "xlsx" / "RECHNUNG-tabelle-00.xlsx"
     assert pfad.exists(), f"{pfad} fehlt – erst den Generator laufen lassen"
-    doc, daten = dokument(pfad, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    doc, daten = dokument(pfad, MEDIA_TYPE_XLSX)
     treffer = [s for s in extract(doc, daten) if "Einzelpreis:" in s.text]
     assert treffer, "Kein Segment enthält die Spalte 'Einzelpreis'"
     zeile = treffer[0].text
@@ -91,8 +233,121 @@ def test_tabellenzeile_bleibt_als_einheit_beisammen() -> None:
     assert re.search(r"Einzelpreis: [\d.,]+ EUR", zeile), "Spaltenname und Wert sind getrennt"
 
 
+def test_xlsx_segmenttext_erfasst_alle_datenzeilen() -> None:
+    """``rest = zeilen[1:2]`` ließe je Blatt nur eine Datenzeile durch – Segmentzahl und
+    Blattname blieben unverändert. Geprüft wird deshalb, wie oft eine in jeder Zeile
+    garantiert gefüllte Spalte im Segmenttext auftaucht, gegen die tatsächliche Anzahl der
+    Datenzeilen (Kopfzeile ausgenommen), unabhängig ermittelt.
+    """
+    pfad = RAW_DIR / "xlsx" / "RECHNUNG-tabelle-00.xlsx"
+    assert pfad.exists(), f"{pfad} fehlt – erst den Generator laufen lassen"
+    doc, daten = dokument(pfad, MEDIA_TYPE_XLSX)
+
+    mappe = openpyxl.load_workbook(io.BytesIO(daten), read_only=True, data_only=True)
+    try:
+        blatt_titel: str | None = None
+        alle_zeilen: Sequence[tuple[object, ...]] = ()
+        for blatt in mappe.worksheets:
+            blatt.reset_dimensions()
+            zeilen = list(blatt.iter_rows(values_only=True))
+            if zeilen and "Einzelpreis" in zeilen[0]:
+                blatt_titel, alle_zeilen = blatt.title, zeilen
+                break
+    finally:
+        mappe.close()
+    assert blatt_titel is not None, "Kein Blatt mit Spalte 'Einzelpreis' gefunden"
+    datenzeilen = sum(
+        1 for zeile in alle_zeilen[1:] if any(zelle not in (None, "") for zelle in zeile)
+    )
+    assert datenzeilen > 1, "Testdatei bietet nur eine Datenzeile – Prüfung liefe leer"
+
+    segmente = extract(doc, daten)
+    text = next(s.text for s in segmente if s.locator == f"Blatt {blatt_titel}")
+    assert text.count("Einzelpreis:") == datenzeilen
+
+
+def _xlsx_mit_kaputter_dimension() -> bytes:
+    """Baut eine Mappe mit Kopf- plus drei Positionszeilen und ersetzt danach das
+    ``<dimension ref="…">`` im Blatt-XML durch den zu kleinen Platzhalter ``A1`` – ganz
+    ohne Artefakt auf der Platte. ``<dimension ref="A1"/>`` ist der übliche Platzhalter
+    von Erzeugern (ERP- und CSV-Exporter, Streaming-Writer), die die Ausdehnung beim
+    Schreiben nicht vorab kennen; Excel korrigiert das beim Öffnen, openpyxl
+    (``read_only=True``) nicht.
+    """
+    mappe = openpyxl.Workbook()
+    blatt = mappe.active
+    assert blatt is not None
+    blatt.title = "Positionen"
+    blatt.append(["Leistung", "Menge", "Einzelpreis", "Betrag"])
+    for i in range(3):
+        blatt.append([f"Abnahme {i}", 1, "900,00", "900,00"])
+    puffer = io.BytesIO()
+    mappe.save(puffer)
+
+    quelle = zipfile.ZipFile(io.BytesIO(puffer.getvalue()))
+    ziel_puffer = io.BytesIO()
+    with zipfile.ZipFile(ziel_puffer, "w", zipfile.ZIP_DEFLATED) as ziel:
+        for eintrag in quelle.infolist():
+            inhalt = quelle.read(eintrag.filename)
+            if eintrag.filename == "xl/worksheets/sheet1.xml":
+                inhalt = re.sub(rb'<dimension ref="[^"]*"/>', b'<dimension ref="A1"/>', inhalt)
+            ziel.writestr(eintrag, inhalt)
+    return ziel_puffer.getvalue()
+
+
+def test_xlsx_ueberlebt_falsche_dimension_angabe() -> None:
+    """``read_only=True`` vertraut dem ``<dimension>``-Attribut der Blatt-XML, statt zu
+    messen, was tatsächlich da ist. Steht dort ein zu kleiner Platzhalter, verwirft
+    openpyxl Spalten und Zeilen kommentarlos – hier müssten sonst alle drei Positionen
+    mit ihren Beträgen ankommen, nicht nur ein Bruchteil.
+    """
+    daten = _xlsx_mit_kaputter_dimension()
+    doc = dokument_aus_bytes(daten, "rechnung.xlsx", MEDIA_TYPE_XLSX)
+
+    segmente = extract(doc, daten)
+    assert len(segmente) == 1
+    text = segmente[0].text
+    assert "900,00" in text
+    assert text.count("Einzelpreis:") == 3, "Nur ein Teil der Datenzeilen ist angekommen"
+    assert text.count("Abnahme") == 3, "Nur ein Teil der Datenzeilen ist angekommen"
+
+
+def _xlsx_mit_kurzer_kopfzeile() -> bytes:
+    """Kopfzeile mit zwei gefüllten Zellen, Datenzeile mit vier – openpyxl polstert die
+    Kopfzeile beim Lesen auf die Breite der breitesten Zeile auf."""
+    mappe = openpyxl.Workbook()
+    blatt = mappe.active
+    assert blatt is not None
+    blatt.title = "Test"
+    blatt["A1"] = "Leistung"
+    blatt["B1"] = "Menge"
+    blatt["A2"] = "Abnahme"
+    blatt["B2"] = 1
+    blatt["C2"] = 10
+    blatt["D2"] = 10
+    puffer = io.BytesIO()
+    mappe.save(puffer)
+    return puffer.getvalue()
+
+
+def test_xlsx_kopfzeile_ohne_leere_spalten_im_text() -> None:
+    """openpyxl polstert jede gelesene Zeile auf die Spaltenzahl des Blattes auf. Hat die
+    Kopfzeile selbst weniger gefüllte Zellen als eine spätere Datenzeile, erscheinen die
+    aufgefüllten Leerzellen als zusätzliche Trennzeichen (``"| |"``) in der dargestellten
+    Kopfzeile. Die Zuordnung Spaltenname → Wert in der Datenzeile darf davon unberührt
+    bleiben.
+    """
+    daten = _xlsx_mit_kurzer_kopfzeile()
+    doc = dokument_aus_bytes(daten, "kurz.xlsx", MEDIA_TYPE_XLSX)
+
+    segmente = extract(doc, daten)
+    assert len(segmente) == 1
+    assert "| |" not in segmente[0].text
+    assert segmente[0].text == "Leistung | Menge | Leistung: Abnahme, Menge: 1, : 10, : 10"
+
+
 def test_text_ist_normalisiert() -> None:
-    doc, daten = dokument(erste("pdf"), "application/pdf")
+    doc, daten = dokument(erste("pdf"), MEDIA_TYPE_PDF)
     segmente = extract(doc, daten)
     assert segmente, "Ohne Segmente prüft die Schleife nichts"
     for segment in segmente:
@@ -100,14 +355,8 @@ def test_text_ist_normalisiert() -> None:
         assert "\n" not in segment.text
 
 
-def test_segment_ids_sind_eindeutig() -> None:
-    doc, daten = dokument(erste("pdf"), "application/pdf")
-    segmente = extract(doc, daten)
-    assert len({s.segment_id for s in segmente}) == len(segmente)
-
-
 def test_unbekanntes_format_wird_abgelehnt() -> None:
-    doc, _ = dokument(erste("pdf"), "application/pdf")
+    doc, _ = dokument(erste("pdf"), MEDIA_TYPE_PDF)
     with pytest.raises(ValueError, match="Nicht unterstützt"):
         extract(doc, b"\x00\x01\x02 irgendwas")
 
@@ -117,9 +366,9 @@ def test_unbekanntes_format_wird_abgelehnt() -> None:
 # garantieren das nicht von sich aus für jede Konstellation – deshalb wird hier gemessen,
 # nicht angenommen.
 DATEIEN_JE_FORMAT: dict[str, str] = {
-    "pdf": "application/pdf",
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": MEDIA_TYPE_PDF,
+    "docx": MEDIA_TYPE_DOCX,
+    "xlsx": MEDIA_TYPE_XLSX,
 }
 
 
