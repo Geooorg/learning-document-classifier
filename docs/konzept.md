@@ -262,7 +262,8 @@ keine Bedeutung. Dokumentklassen leben von beidem.
 
 - Modell **`intfloat/multilingual-e5-base`**, 768 Dimensionen, lokal über
   `sentence-transformers` — dasselbe Modell wie im Referenzprojekt, damit die Erfahrungen
-  übertragbar bleiben.
+  übertragbar bleiben. Vergleich mit BGE-M3 und warum die Wahl gemessen statt entschieden
+  wird: [Anhang B](#anhang-b--das-embedding-modell-e5-gegenüber-bge-m3).
 - **Dokument-Embedding aus Chunk-Embeddings:** Text in ~1200-Zeichen-Chunks, jeder
   eingebettet, dann positionsgewichteter Mittelwert. Frühe Chunks zählen mehr — der
   Dokumentkopf trägt die Klasseninformation fast immer (Betreff, Briefkopf, Überschrift).
@@ -284,6 +285,11 @@ TF-IDF über **Zeichen-n-Gramme (3–5)** statt Wort-n-Gramme. Zwei Gründe, bei
 
 Vokabular auf ~50 000 Merkmale begrenzt, danach `TruncatedSVD` auf 256 Dimensionen, damit
 der Block nicht die dichten Embeddings erschlägt.
+
+Ausführlich, mit gemessenen Überlappungen und dem Vergleich zu `compound-split` aus dem
+Referenzprojekt: [Anhang A](#anhang-a--warum-zeichen-n-gramme-statt-kompositazerlegung).
+Was dieser Block **nicht** kann — Synonyme — und wer es stattdessen tut:
+[Anhang D](#anhang-d--synonyme-sprachen-und-was-der-kosinus-nicht-hergibt).
 
 ### 6.3 Form und Herkunft: Strukturmerkmale
 
@@ -409,6 +415,13 @@ Die OOD-Prüfung ist nötig, weil ein lineares Modell auf einem Dokument, das ke
 die Masse auf sie. Die Distanz im Embedding-Raum ist unabhängig davon und fängt genau den
 Fall ab, der den Rest verdirbt.
 
+**δ wird ebenso wenig geraten wie τ.** Kosinuswerte in Satz-Embeddings sind stark gestaucht:
+gemessen liegen inhaltlich sehr verschiedene Dokumentausschnitte zwischen 0,79 und 0,98
+([Anhang D](#anhang-d--synonyme-sprachen-und-was-der-kosinus-nicht-hergibt)). Ein geschätzter
+Schwellwert wäre in diesem Band reine Willkür. δ wird deshalb empirisch als Perzentil
+bestimmt — Startwert: das 95. Perzentil der Distanzen gelabelter Dokumente zu ihrem eigenen
+Klassenprototyp, gemessen auf der Kalibriermenge — und mit der Modellversion gespeichert.
+
 ---
 
 ## 8. Lernfähigkeit: wie das System besser wird
@@ -435,7 +448,8 @@ Stufen, jede billiger als von Hand anzufangen:
    `source = "human"` und vollem Gewicht.
 
 **Wichtig:** LLM-Labels gehen nie ins Gold-Set. Ein Modell, das gegen die Meinung eines
-anderen Modells gemessen wird, misst Ähnlichkeit, nicht Wahrheit.
+anderen Modells gemessen wird, misst Ähnlichkeit, nicht Wahrheit. Herkunftsarten, Gewichte
+und warum `bootstrap` auf 0 steht: [Anhang C](#anhang-c--label-herkunft-und-gewichte).
 
 ### 8.2 Auswahl: welche 25 Dokumente lohnen sich als nächstes?
 
@@ -862,3 +876,332 @@ was die Auswertungen aus Phase 3 als Engpass ausweisen. **Nicht vorher entscheid
    beides. Falls weitere Sprachen dazukommen, muss das Gold-Set sie abbilden.
 4. **Mandantentrennung.** Falls nötig, wird das `project_id`-Muster aus dem Referenzprojekt
    übernommen (Pflichtargument ohne Vorgabe, Formatprüfung in jedem Modell).
+
+---
+
+# Anhänge
+
+Vertiefungen zu Entscheidungen aus dem Hauptteil. Alle Zahlen in den Anhängen sind
+gemessen, nicht geschätzt; die Messskripte gehören nach `scripts/`.
+
+## Anhang A — Warum Zeichen-n-Gramme statt Kompositazerlegung
+
+### Wie das Referenzprojekt es gelöst hat
+
+In `bauprojekt-ai-pipeline` war das Problem die **Postgres-Volltextsuche**, nicht die
+Einbettung. `compounds.py` beschreibt es genau: Der deutsche Stemmer macht aus
+„Genehmigungen" `genehm` und aus „Baugenehmigung" `baugenehm` — zwei verschiedene Lexeme im
+`tsvector`, also kein Treffer.
+
+Die Lösung war **CharSplit** (`compound-split`, Tuggener 2016), ein statistischer Zerleger:
+Aus „Baugenehmigung" wird zusätzlich „bau genehmigung" indiziert. Der Preis steht ebenso
+deutlich im Modul:
+
+- Schwelle 0,6 — darunter liegen richtige und falsche Zerlegungen durcheinander
+  (`Fassaden+dämmung` −0,79 neben `Bear+beitung` −0,80)
+- Falsche Zerlegungen sind nicht harmlos: Sie schieben Wörter wie „ständig" in den Index
+  und erzeugen Falschtreffer
+- Folge: Genauigkeit vor Vollständigkeit — **„Fassadendämmung" wird nicht zerlegt**
+- GPL-3.0, deshalb bewusst in einem einzigen Modul isoliert
+
+### Was TF-IDF über Zeichen-n-Gramme ist
+
+**TF-IDF** — *Term Frequency × Inverse Document Frequency*:
+
+- **TF**: Häufigkeit des Terms in *diesem* Dokument, meist gedämpft als `1 + log(Anzahl)`
+- **IDF**: `log(N / Anzahl Dokumente mit dem Term)`. Allgegenwärtiges („der", „Seite",
+  „GmbH") bekommt Gewicht nahe 0, Seltenes viel
+- Das Produkt ist hoch für Terme, die *hier häufig und insgesamt selten* sind
+
+**n-Gramm** — ein Fenster von n aufeinanderfolgenden Einheiten. Statt über Wörter schiebt
+es hier über **Zeichen**; `analyzer="char_wb"` in scikit-learn hält das Fenster innerhalb
+der Wortgrenzen. „Rechnung" bei n=5 ergibt: `␣Rech`, `Rechn`, `echnu`, `chnun`, `hnung`,
+`nung␣`.
+
+### Warum das Komposita auflöst, ohne sie zu zerlegen
+
+Es wird **keine Zerlegungsentscheidung getroffen** — die Überlappung entsteht von selbst.
+Gemessen (Jaccard über die 5-Gramm-Mengen):
+
+| Paar | Überlappung | gemeinsame 5-Gramme |
+|---|---|---|
+| Rechnung ↔ Rechnungsbetrag | 0,36 | `rechn echnu chnun hnung` |
+| Rechnung ↔ Schlussrechnung | 0,36 | `rechn echnu chnun hnung nung␣` |
+| Genehmigung ↔ Baugenehmigung | 0,62 | `geneh enehm ehmig hmigu igung gung␣` |
+| **Dämmung ↔ Fassadendämmung** | **0,29** | `dämmu ämmun mmung mung␣` |
+| Rechnung ↔ **Rechnunq** (OCR-Fehler) | 0,50 | `␣rech rechn echnu chnun` |
+| Rechnung ↔ Gutschrift | 0,00 | — |
+
+Drei Beobachtungen:
+
+- **Der Fall, den CharSplit verweigert, funktioniert.** „Fassadendämmung" ist in
+  `compounds.py` als bekannte Grenze vermerkt; hier ergibt sich 0,29 Überlappung, ohne dass
+  jemand entscheiden musste, ob es ein Kompositum ist.
+- **Falsche Zerlegungen können nicht entstehen**, weil nicht zerlegt wird. Die Gefahr aus
+  dem Referenzmodul existiert strukturell nicht. Das ist der eigentliche Gewinn — nicht die
+  gesparte Abhängigkeit.
+- **Es entsteht keine Scheinähnlichkeit.** Rechnung ↔ Gutschrift bleibt 0,00; das Verfahren
+  verwischt nicht alles.
+
+Bei OCR bleiben von „Rechnunq" vier von acht Grammen erhalten. Für ein Wortmodell wäre es
+ein unbekanntes Token — Gewicht 0, Information verloren.
+
+### Warum das hier trägt und in der Suche nicht getragen hätte
+
+| | Suche (Referenzprojekt) | Klassifikation (hier) |
+|---|---|---|
+| Mechanismus | invertierter Index über diskrete Lexeme | Gewichtsvektor in einem linearen Modell |
+| Braucht | **exakten** Tokentreffer im `tsvector` | **partielle** Ähnlichkeit |
+| Teiltreffer | nützt nichts — Treffer oder nicht | genau das, was ausgewertet wird |
+
+Postgres kann „`rechn` steckt in beiden Wörtern" nicht als halben Treffer verbuchen. Ein
+linearer Klassifikator kann es: Er lernt „hohes Gewicht auf den `rechn`-Grammen ⇒ Klasse
+RECHNUNG", gleich aus welchem Wort sie stammen.
+
+`compound-split` wäre hier nicht falsch, nur überflüssig — samt Schwellenproblematik und
+GPL-3.0. Falls später eine Volltextsuche dazukommt, ist `compounds.py` unverändert
+übertragbar.
+
+### Wozu die SVD
+
+**SVD** — *Singular Value Decomposition*, Singulärwertzerlegung. Auf eine TF-IDF-Matrix
+angewandt heißt das Verfahren **LSA** (*Latent Semantic Analysis*): `X ≈ U·Σ·Vᵀ`, und man
+behält die 256 stärksten Richtungen. Zwei Gründe:
+
+1. **Größenordnung.** Ein Wortvokabular hat ~20 000 Einträge, ein 3-bis-5-Zeichen-Gramm-
+   Vokabular schnell 500 000. Erst `max_features=50_000`, dann SVD auf 256. Sonst stünden
+   50 000 dünne Merkmale neben 768 dichten — bei wenigen hundert Labels überanpasst das
+   Modell rettungslos und der Embedding-Block geht unter.
+2. **Redundanz.** `rechn`, `echnu`, `chnun` treten praktisch immer gemeinsam auf; SVD fasst
+   sie zu einer Richtung zusammen.
+
+Nachteil: Nach der SVD ist nicht mehr direkt ablesbar, welches n-Gramm eine Entscheidung
+getragen hat. Auswege: Klassifikatorgewichte über `Vᵀ` in den n-Gramm-Raum zurückprojizieren
+— oder für Erklärungen auf die ohnehin lesbaren Strukturmerkmale (§ 6.3) zeigen.
+
+---
+
+## Anhang B — Das Embedding-Modell: E5 gegenüber BGE-M3
+
+Beide liegen auf diesem Rechner bereits vor: `intfloat/multilingual-e5-base` im
+HuggingFace-Cache (aus dem Referenzprojekt), `bge-m3:567m-fp16` in Ollama. **BGE-M3** steht
+für *BAAI General Embedding*, das M3 für **M**ulti-Linguality, **M**ulti-Granularity,
+**M**ulti-Functionality.
+
+| | multilingual-e5-base | BGE-M3 |
+|---|---|---|
+| Grundmodell | XLM-RoBERTa-**base**, 12 Schichten | XLM-RoBERTa-**large**, 24 Schichten |
+| Parameter | ~278 Mio. | ~568 Mio. (2×) |
+| Dimension | 768 | 1024 |
+| Kontextfenster | 512 Token (~350 dt. Wörter) | 8192 Token |
+| Präfixe | `passage: ` / `query: ` **Pflicht** | keine |
+| Platte | ~1,1 GB (fp32) | ~2,2 GB fp32 / 1,2 GB fp16 |
+| Tempo auf CPU | ~2× schneller | |
+| Ausgabe | dicht | dicht + sparse (gelernte Termgewichte) + ColBERT-Mehrvektor |
+
+**Das lange Kontextfenster hilft hier kaum.** Es klingt nach dem Argument für lange
+Verträge, aber wir wollen ohnehin keinen einzelnen Vektor über 200 Seiten — ein Mittelwert
+darüber ist Brei. Das Konzept bettet chunkweise mit Positionsgewichtung ein und nimmt den
+Dokumentkopf separat (§ 6.1); 512 Token je Chunk genügen vollständig. Der Vorteil beschränkt
+sich darauf, die ersten zwei bis drei Seiten am Stück einbetten zu können.
+
+**Die sparse-Ausgabe von BGE-M3 ist der interessantere Teil**: gelernte Termgewichte, im
+Grunde ein trainiertes BM25 — genau die Aufgabe des TF-IDF-Blocks, den sie teilweise
+ersetzen könnte. Über Ollama ist sie allerdings nicht zugänglich (`/api/embeddings` liefert
+nur den dichten Vektor); dafür braucht es `FlagEmbedding` bzw. sentence-transformers direkt.
+Phase-5-Versuch, kein Startpunkt.
+
+**Empfehlung: mit E5-base anfangen.**
+
+- Das Referenzprojekt nutzt es — Erfahrungen und Ergebnisse bleiben vergleichbar
+- Halbe Größe = doppelte Iterationsgeschwindigkeit, und die entscheidet, ob die Lernschleife
+  benutzt wird
+- Für einen **linearen Kopf obendrauf** zählt der Benchmark-Rang des Embedders weit weniger
+  als bei Retrieval: 768 gute gegen 1024 leicht bessere Dimensionen sind typischerweise 1–2
+  Punkte Macro-F1 — bei 350 Gold-Dokumenten innerhalb des Rauschens (§ 9.4)
+
+Ein Argument für BGE-M3 sei genannt: Die E5-Präfixe sind eine stille Fehlerquelle;
+`embeddings.py` im Referenzprojekt warnt ausdrücklich davor, dass ihr Fehlen „ohne
+Fehlermeldung bleibt". BGE-M3 hat diese Falle nicht.
+
+**Die Wahl ist aber eine Messfrage, keine Meinungsfrage.** `features.py` reicht den Encoder
+als Protocol herein — dasselbe Muster wie `Encoder`/`load_encoder` im Referenzprojekt — und
+der Modellname geht in die `feature_version` ein. Beide Modelle durchrechnen und gegen
+dasselbe Gold-Set mit Bootstrap-Intervall vergleichen: ein 20-Minuten-Versuch in Phase 2 und
+zugleich die erste sinnvolle Übung mit der Auswertungsmaschinerie.
+
+---
+
+## Anhang C — Label-Herkunft und Gewichte
+
+Der Engpass der Lernschleife ist Menschenzeit; ein lokales Ollama-Modell kann kostenlos
+vorlabeln. Ein LLM-Label ist aber nicht dasselbe wie ein Menschenlabel — aus zwei Gründen,
+die unterschiedlich gefährlich sind und deshalb unterschiedlich behandelt werden.
+
+### Das Gewicht: gegen gewöhnliche Fehler
+
+`fit(X, y, sample_weight=w)` in scikit-learn gewichtet jedes Beispiel in der Verlustfunktion:
+
+```
+L = Σᵢ wᵢ · logloss(yᵢ, p̂(xᵢ))
+```
+
+Mit `w = 0,3` trägt ein LLM-gelabeltes Dokument 30 % dessen bei, was ein menschlich
+gelabeltes beiträgt — grob: **drei LLM-Labels wiegen ein Menschenlabel auf.** Die LLM-Labels
+geben dem Modell gratis eine grobe Form der Klassengrenzen; wo sie einem Menschenlabel
+widersprechen, gewinnt der Mensch; und der Schaden eines falschen LLM-Labels ist nach oben
+begrenzt.
+
+**0,3 ist ein Startwert, keine Wahrheit** — und selbst messbar: mit `w ∈ {0; 0,1; 0,3; 0,5;
+1,0}` trainieren und die Gold-Set-Kurve ablesen. `w = 0` heißt „ignorieren", `w = 1` heißt
+„dem LLM wie einem Menschen vertrauen". Das Optimum hängt daran, wie gut das LLM tatsächlich
+ist; der Versuch gehört in Phase 3.
+
+Das Ereignisprotokoll (§ 4) macht den Übergang sauber: Bestätigt ein Mensch einen
+LLM-Vorschlag in der Prüfliste, entsteht ein **neues** Ereignis mit `source = "human"`, und
+das Dokument wiegt ab da 1,0. LLM-Labels sind Baugerüst, das genau dort durch Echtes ersetzt
+wird, wo jemand hingeschaut hat.
+
+| `source` | Herkunft | Gewicht | im Gold-Set |
+|---|---|---|---|
+| `generator` | synthetisch, Wahrheit konstruktionsbedingt bekannt | 1,0 | ✅ |
+| `human` | Mensch in der Prüfliste | 1,0 | ✅ |
+| `llm` | lokales Ollama-Modell | 0,3 | ❌ |
+| `rule` | Ordner- oder Dateinamensmuster | 0,2 | ❌ |
+| `bootstrap` | Zero-Shot über eigene Klassenprototypen | **0** | ❌ |
+
+`bootstrap` steht auf 0, und die Unterscheidung dahinter ist scharf: Ein LLM-Label bringt
+**neue Information** ins System — das Sprachmodell weiß aus seinem Training, was eine
+Rechnung ist, und unser Klassifikator weiß das nicht. Ein Prototyp-Label bringt **keine**:
+Es ist eine deterministische Funktion genau der Merkmale, die der Klassifikator ohnehin
+sieht. Darauf zu trainieren ist wörtlich Bestätigungsfehler — das Modell lernt seine eigene
+Ausgabe auswendig und wird dabei selbstsicherer, ohne besser zu werden; der Fall rechts oben
+in der Tabelle von § 9.1. Prototyp-Labels dienen deshalb nur dazu, die Prüfliste zu
+sortieren und einen Vorschlag anzuzeigen.
+
+### Das Verbot: gegen den Fehler, den man nicht bemerkt
+
+Das Gold-Set ist der einzige Ort, an dem die Wahrheit wohnt. Käme dort ein LLM-Label hinein,
+würde nicht mehr Korrektheit gemessen, sondern **Übereinstimmung mit dem LLM**.
+
+Heimtückisch ist das, weil der Fehler die Metrik nicht verrauscht, sondern **umdreht**: Ein
+Klassifikator, der die Irrtümer des LLM mitgelernt hat, schnitte dann *besser* ab, nicht
+schlechter. Alle Zahlen sähen gesund aus.
+
+Dahinter steht die allgemeine Regel: **Niemals gegen ein Label auswerten, dessen Ursprung im
+System selbst liegt.** Es ist derselbe Gedanke wie `report.check_sources` im Referenzprojekt
+— der Code prüft das Modell, nicht umgekehrt.
+
+Durchgesetzt wird das **im Code, nicht per Konvention**: `evaluate.py` filtert das Gold-Set
+auf `source ∈ {human, generator}` und wirft eine Ausnahme, wenn ein Gold-Dokument eine
+andere Herkunft hat — gleiche Bauart wie der harte Ausschluss des Gold-Sets aus der
+Active-Learning-Auswahl (§ 9.2).
+
+Nebenbei macht das `source`-Feld die Frage beantwortbar, die zählt: *Wie viele meiner Labels
+sind eigentlich von Menschen?* Diese Zahl, nicht die Gesamtzahl, sagt voraus, wie weit das
+Modell kommen kann.
+
+---
+
+## Anhang D — Synonyme, Sprachen und was der Kosinus nicht hergibt
+
+### Zeichen-n-Gramme können Synonyme nicht
+
+| Paar | Jaccard (5-Gramm) |
+|---|---|
+| Rechnung ~ Zahlungsaufforderung | **0,00** |
+| Rechnung ~ Invoice | **0,00** |
+| Rechnung ~ Faktura | **0,00** |
+| Vertrag ~ Vereinbarung | **0,00** |
+| Protokoll ~ Besprechungsnotiz | **0,00** |
+| *(Rechnung ~ Schlussrechnung)* | *0,36* |
+
+Der Block sieht **Oberflächenform** — Morphologie, Komposita, Flexion, OCR-Verstümmelung.
+Bedeutung sieht er nicht und soll er nicht. Das ist die Arbeitsteilung der drei Blöcke aus
+§ 6: n-Gramme für die Form, Embedding für die Bedeutung, Strukturmerkmale für die Machart.
+Drei Blöcke mit drei verschiedenen Versagensarten.
+
+### Was das Embedding leistet — gemessen
+
+Mit `multilingual-e5-base`, normierte Vektoren, Kosinus.
+
+**Einzelwörter sind unbrauchbar:**
+
+```
+Rechnung ~ Zahlungsaufforderung   0,954
+Rechnung ~ Faktura                0,936
+Rechnung ~ Gutschrift             0,927   ← das Gegenteil
+Rechnung ~ Mietvertrag            0,920   ← völlig anderes Dokument
+Rechnung ~ Invoice                0,912   ← rangiert unter Mietvertrag
+```
+
+Die gesamte Spanne liegt zwischen 0,91 und 0,95. **Absolute Kosinuswerte in
+Satz-Embeddings sind gestaucht und dürfen nie wie Wahrscheinlichkeiten gelesen werden.**
+
+**Dokumentausschnitte sind aussagekräftig.** Referenz: eine Rechnung mit Nummer, Betrag,
+USt, Zahlungsziel und IBAN.
+
+```
+dieselbe Rechnung, nur „Zahlungsaufforderung" statt „Rechnung"   0,981
+Gutschrift dazu (Storno, negativer Betrag)                       0,964
+dieselbe Rechnung auf Englisch                                   0,925
+Mietvertrag                                                      0,791
+```
+
+Drei Befunde:
+
+1. **Synonymie im Deutschen ist gelöst.** 0,981 — der Wortwechsel ist für das Embedding
+   praktisch unsichtbar. Genau dafür ist der Block da.
+2. **Sprachübergreifend trägt es, aber schwächer.** 0,925 liegt klar über der fernen
+   Kontrolle (0,791), also überträgt E5 zwischen Deutsch und Englisch — aber deutlich unter
+   dem deutschen Synonym. **Folge: Sind englische Dokumente im Scope, brauchen sie eigene
+   gelabelte Beispiele und eigene Gold-Set-Einträge.** Auf Transfer aus dem Deutschen darf
+   man sich nicht verlassen.
+3. **Der harte Fall ist nicht die Synonymie.** Die Gutschrift — inhaltlich das Gegenteil —
+   liegt mit 0,964 **näher an der Rechnung als deren englische Fassung**. Zwei Dokumente,
+   die sich in einem Wort und einem Vorzeichen unterscheiden, sind im Embedding-Raum fast
+   deckungsgleich. Das bestätigt Diagnose 2 aus § 9.5 empirisch, bevor eine Zeile Code
+   geschrieben ist: Rechnung↔Gutschrift löst kein besseres Embedding, sondern ein gezieltes
+   Strukturmerkmal (Vorzeichen des Gesamtbetrags, „Gutschrift"/„Storno" im Kopfbereich) —
+   oder SetFit, das den Raum entlang genau dieser Grenze auseinanderzieht.
+
+Einschränkung gegen Überinterpretation: Der Klassifikator rechnet **keinen Kosinus**. Er
+sieht alle 768 Dimensionen und kann eine trennende Richtung finden, auch wo der Kosinus —
+der 768 Zahlen auf eine zusammenquetscht — nichts hergibt. Die 0,964 heißen „schwierig",
+nicht „unmöglich".
+
+### Der eigentliche Synonym-Mechanismus ist die Lernschleife
+
+Auch der TF-IDF-Block **kann** Synonyme — nicht in der Repräsentation, sondern in den
+**gelernten Gewichten**. Tauchen in gelabelten `RECHNUNG`-Dokumenten die n-Gramme von
+„Zahlungsaufforderung" auf, gibt die logistische Regression ihnen positives Gewicht für
+diese Klasse. Sie muss nicht wissen, dass es ein Synonym *ist*; sie beobachtet, dass es mit
+dem Label einhergeht. Distributionelle Synonymie aus Supervision, ohne Thesaurus.
+
+Bedingung: Das Synonym muss in **gelabelten** Daten vorkommen. Genau das liefert der
+Kreislauf von selbst:
+
+```
+Dokument sagt „Zahlungsaufforderung"
+   → ungewohnte Oberfläche, n-Gramme tragen nichts bei
+   → kleiner Margin (§ 7.2)
+   → weit oben in der Prüfliste (§ 8.2)
+   → Mensch labelt es
+   → Synonym ist gelernt
+```
+
+**Die Lernschleife ist der Synonym-Mechanismus.** Ungewöhnlicher Wortschatz erzeugt
+Unsicherheit, Unsicherheit erzeugt Priorität, Priorität erzeugt ein Label. Kein Nebeneffekt,
+sondern der Zweck der Konstruktion — und messbar: Steigt nach Runde 5 die Coverage@P98, sind
+unter den Ursachen genau solche gelernten Varianten.
+
+**Bewusst nicht gebaut: eine gepflegte Synonymliste oder Query-Expansion.** Der
+Pflegeaufwand ist unbegrenzt (jede Branche, jeder Lieferant hat eigene Wörter), die Liste
+veraltet lautlos, und sie beschreibt nur, was die Schleife ohnehin lernt — mit dem
+Unterschied, dass die Schleife dabei auch misst, ob es genützt hat.
+
+### Folgerung für die OOD-Schwelle
+
+Wenn inhaltlich weit auseinanderliegende Dokumentausschnitte zwischen 0,79 und 0,98 liegen,
+ist ein geschätztes δ in § 7.4 reine Willkür. δ wird deshalb wie τ empirisch bestimmt: als
+Perzentil der beobachteten Distanzen auf der Kalibriermenge, versioniert mit dem Modell.
