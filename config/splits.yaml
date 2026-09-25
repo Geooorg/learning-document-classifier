@@ -1,0 +1,65 @@
+# Der Gold-Set-Schnitt, einmal gewürfelt und seither fest. Läuft über Vorlagen, nicht über
+# Dokumente: Zehn Varianten einer Vorlage sind praktisch dasselbe Dokument und dürfen nicht
+# auf beide Seiten fallen (Konzept § 9.2).
+#
+# Diese Datei wird nicht von Hand gepflegt und nicht neu gewürfelt. Eine neue Vorlage wird
+# von scripts/generate_documents.py angehängt; bestehende Einträge ändern sich nie. Wer sie
+# löscht, macht alle vorher gemessenen Zahlen unvergleichbar.
+version: 1
+splits:
+  AGB-allgemein: gold
+  AGB-einkauf: train
+  AGB-mail: train
+  AGB-online: gold
+  AGB-service: gold
+  AGB-software: gold
+  AGB-transport: calib
+  AGB-vermietung: gold
+  GUTSCHRIFT-bonus: gold
+  GUTSCHRIFT-fracht: train
+  GUTSCHRIFT-maengel: gold
+  GUTSCHRIFT-mail: gold
+  GUTSCHRIFT-ruecksendung: gold
+  GUTSCHRIFT-skonto: train
+  GUTSCHRIFT-storno: calib
+  GUTSCHRIFT-tabelle: gold
+  PROTOKOLL-abnahme: train
+  PROTOKOLL-bericht: train
+  PROTOKOLL-bericht-pdf: gold
+  PROTOKOLL-jour-fixe: gold
+  PROTOKOLL-mail: calib
+  PROTOKOLL-top: gold
+  PROTOKOLL-top-pdf: gold
+  PROTOKOLL-xlsx: gold
+  RECHNUNG-docx: gold
+  RECHNUNG-mail: gold
+  RECHNUNG-mail-anhang: gold
+  RECHNUNG-standard: gold
+  RECHNUNG-storno-docx: train
+  RECHNUNG-storno-ersatz: train
+  RECHNUNG-storno-xlsx: calib
+  RECHNUNG-tabelle: gold
+  SONST-anleitung: gold
+  SONST-anschreiben: gold
+  SONST-anschreiben-mail: train
+  SONST-bescheinigung: train
+  SONST-bescheinigung-pdf: gold
+  SONST-lieferschein: gold
+  SONST-lieferschein-xlsx: gold
+  SONST-werbung: calib
+  STATUS-gelb: gold
+  STATUS-gruen: gold
+  STATUS-mail: gold
+  STATUS-monat: train
+  STATUS-pdf-gruen: calib
+  STATUS-quartal: train
+  STATUS-rot: gold
+  STATUS-xlsx: gold
+  VERTRAG-dienst: train
+  VERTRAG-lizenz: gold
+  VERTRAG-mail: gold
+  VERTRAG-miete: train
+  VERTRAG-mit-agb: gold
+  VERTRAG-rahmen: gold
+  VERTRAG-wartung: calib
+  VERTRAG-werk: gold
