@@ -53,3 +53,36 @@ def test_nur_die_wiederkehrende_zeile_verschwindet() -> None:
             f"vorher:  {vorher!r}\nnachher: {nachher!r}"
         )
         assert "Dritter Satz" in nachher
+
+
+def test_satz_auf_genau_der_schwelle_wird_entfernt() -> None:
+    """Drei von fünf Seiten sind exakt 0,6 – der Grenzfall, den ``min_share`` benennt.
+
+    Ohne diesen Test überleben zwei Mutationen: eine Schwelle, die faktisch 1,0 ist
+    („nur was auf allen Seiten steht"), und ein ``>`` statt ``>=`` im Vergleich. Beide
+    lassen die anderen Tests grün, weil deren Fixtures die Fußzeile entweder auf 100 %
+    der Seiten setzen oder weit unter die Schwelle legen – nie dazwischen.
+    """
+    wiederholt = "Zwischenstand siehe Anlage"
+    seiten = [
+        f"Eigener Inhalt Nummer {i} an dieser Stelle" + (f". {wiederholt}" if i < 3 else "")
+        for i in range(5)
+    ]
+    bereinigt = strip_boilerplate(seiten)
+    assert wiederholt not in " ".join(bereinigt)
+    assert all(f"Inhalt Nummer {i}" in bereinigt[i] for i in range(5))
+
+
+def test_kurzes_wiederkehrendes_bruchstueck_bleibt_stehen() -> None:
+    """``MIN_SENTENCE_LENGTH`` schützt kurze Fragmente davor, als Layout zu gelten.
+
+    „Danke" steht auf jeder Seite und wäre nach reiner Häufigkeit Layout – ist aber zu
+    unspezifisch, um es zu verwerfen. Ohne diesen Test überlebt das Entfernen des Filters.
+    """
+    seiten = [
+        f"Inhalt Nummer {i} steht hier ausführlich. Danke. Muster GmbH · HRB 44821"
+        for i in range(5)
+    ]
+    bereinigt = strip_boilerplate(seiten)
+    assert all("Danke" in seite for seite in bereinigt)
+    assert all("HRB 44821" not in seite for seite in bereinigt)
