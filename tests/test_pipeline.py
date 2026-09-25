@@ -1,13 +1,18 @@
 """Die Pipeline muss inkrementell sein und Anhänge als eigene Dokumente führen."""
 
 import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+from doccls.config import MIN_CHARS_PER_PAGE, RAW_DIR
+from doccls.detect import MEDIA_TYPES, Format
+from doccls.extraction import extract
 from doccls.generation.content import build_corpus
 from doccls.generation.writers import write
+from doccls.models import Document
 from doccls.pipeline import ingest, read_table
 
 
@@ -169,3 +174,41 @@ def test_gescanntes_pdf_wird_als_ocr_bedürftig_markiert(tmp_path: Path) -> None
     ingest(roh, tmp_path / "parquet")
     dokumente = read_table(tmp_path / "parquet", "documents")
     assert dokumente.filter(pl.col("file_name") == "scan.pdf")["needs_ocr"][0] is True
+
+
+def test_kein_erzeugtes_pdf_gilt_als_ocr_beduerftig() -> None:
+    """Die OCR-Schwelle trennt Scan von Textebene – sie darf nicht in die Verteilung der
+    echten Dokumente hineinschneiden.
+
+    Mit den ursprünglich geplanten 120 Zeichen je Seite wurden 30 von 230 PDF mit
+    vollständiger Textebene als OCR-bedürftig markiert, weil der Bestand nur von 113 bis
+    157 Zeichen je Seite reicht. Kein anderer Test bemerkte das: alle prüften die
+    Gegenrichtung (ein leeres PDF *wird* markiert). Schlägt dieser Test fehl, liegt die
+    Schwelle wieder zu hoch – oder die Vorlagen sind kürzer geworden.
+    """
+    pdfs = sorted(RAW_DIR.glob("pdf/*.pdf"))
+    assert pdfs, "Kein Bestand vorhanden – erst scripts/generate_documents.py laufen lassen"
+
+    knappste: list[tuple[float, str]] = []
+    for pfad in pdfs:
+        daten = pfad.read_bytes()
+        dokument = Document.create(
+            source_path=pfad.name,
+            media_type=MEDIA_TYPES[Format.PDF],
+            content=daten,
+            ingested_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        segmente = extract(dokument, daten)
+        assert segmente, f"{pfad.name} liefert keine Segmente"
+        knappste.append((sum(len(s.text) for s in segmente) / len(segmente), pfad.name))
+
+    zeichen, name = min(knappste)
+    assert zeichen >= MIN_CHARS_PER_PAGE, (
+        f"{name} hat nur {zeichen:.1f} Zeichen je Seite und gälte als gescannt, "
+        f"obwohl es eine Textebene hat (Schwelle {MIN_CHARS_PER_PAGE})"
+    )
+    assert zeichen >= 2 * MIN_CHARS_PER_PAGE, (
+        f"Der Abstand zur Schwelle ist auf {zeichen / MIN_CHARS_PER_PAGE:.1f}-fach "
+        f"geschrumpft ({name}). Unter dem doppelten Abstand ist die Trennung zwischen "
+        "Scan und Textebene nicht mehr robust."
+    )
