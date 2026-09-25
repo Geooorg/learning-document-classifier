@@ -284,3 +284,29 @@ def test_extraktion_ist_deterministisch_fuer_echte_mail() -> None:
     assert erster_lauf, "Ohne Segmente prüft der Vergleich nichts"
     assert erster_lauf == zweiter_lauf
     assert erste_anhaenge == zweite_anhaenge
+
+
+def test_betreff_steht_als_heading_am_kopfsegment() -> None:
+    """``heading`` ist ein eigenes Feld, nicht nur ein Nebenprodukt von ``text``.
+
+    Ohne diese Prüfung überlebt eine Umsetzung, die durchgängig ``heading=None`` setzt:
+    der Betreff steht dann zwar weiter im Kopftext, aber das Feld, das ihn später als
+    Fundstelle und als Merkmal tragen soll, bleibt leer – und kein anderer Test merkt es.
+    """
+    daten = mail_bytes(mit_anhang=False)
+    segmente, _ = extract_eml(dokument(daten), daten)
+    kopf = next(s for s in segmente if s.kind is SegmentKind.MAIL_KOPF)
+    assert kopf.heading == "Ihre Rechnung RE-2026-4711"
+
+
+def test_mail_ohne_betreff_hat_kein_heading() -> None:
+    """Gegenstück: ``heading`` darf nicht mit einer leeren Zeichenkette belegt werden,
+    sonst wäre „kein Betreff" später nicht von „leerer Betreff" zu unterscheiden."""
+    nachricht = EmailMessage(policy=SMTP)
+    nachricht["From"] = "a@b.example"
+    nachricht["To"] = "c@d.example"
+    nachricht.set_content("Ohne Betreff.")
+    daten = nachricht.as_bytes()
+    segmente, _ = extract_eml(dokument(daten), daten)
+    kopf = next(s for s in segmente if s.kind is SegmentKind.MAIL_KOPF)
+    assert kopf.heading is None
