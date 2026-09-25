@@ -525,7 +525,60 @@ die Gesamtmetrik fröhlich weiter, während die seltene, aber geschäftlich wich
 Ein abgelehnter Lauf wird trotzdem registriert — mit Begründung. Die Folge fehlgeschlagener
 Läufe ist eine der aufschlussreichsten Aufzeichnungen des Projekts.
 
-### 8.5 Spätere Ausbaustufen
+### 8.5 Korrigieren: falsch Gelerntes wieder loswerden
+
+**Der einfache Fall braucht kein Entlernen.** Weil § 8.3 vollständig neu trainiert, existiert
+ein falsches Label für das nächste Modell schlicht nie: Korrektur → neues `label_event` löst
+das alte ab → nächster Snapshot ist richtig → das neue Modell hat den Fehler nie gesehen.
+Rückstandsfrei. Bei inkrementellem Lernen wäre das unmöglich — ein Gradientenschritt lässt
+sich nicht sauber subtrahieren. Das ist der konkrete Ertrag jener Entscheidung.
+
+Das falsche Label wird dabei **nicht gelöscht**. Dass das Modell sich geirrt hat und ein
+Mensch eingegriffen hat, ist selbst ein Datum.
+
+**Der harte Fall** ist der, in dem das Label längst richtig ist und das Modell trotzdem irrt.
+Vier Ursachen, vier Antworten:
+
+| Ursache | Erkennen | Antwort |
+|---|---|---|
+| Der Fehler ist eine **Region**, nicht ein Punkt | ähnliche Dokumente fallen weiter durch | die k nächsten Nachbarn des korrigierten Dokuments im Embedding-Raum ganz oben in die Prüfliste |
+| Die Korrektur wird **überstimmt** | ein Gegenbeispiel gegen 300 andere | bestätigte Korrekturen mit `sample_weight` 2,0, befristet |
+| Das Modell nutzt eine **Abkürzung** | `coef_` gegen Merkmalsnamen: Gewicht auf „Seite 1 von 3" statt „Zahlungsziel" | Gegenbeispiele, die die Korrelation brechen — gleiches Layout, andere Klasse |
+| Die **Konfidenz** bleibt falsch | Klasse stimmt, Überschätzung bleibt | Korrekturen auch in die **Kalibriermenge**, nicht nur ins Training |
+
+Zur ersten Zeile: Aus einer Korrektur werden so zehn. Das ist der wirksamste Hebel und
+kostet wenige Zeilen, weil die Embeddings ohnehin vorliegen.
+
+Zur zweiten: Das ist buchstäblich Entgegen-Lernen — der Verlustbeitrag genau des falschen
+Falls wird erhöht und drückt die Grenze darüber hinweg. Die Gefahr, dass das Modell dem
+letzten Fehler hinterherjagt und schwingt, fängt das Promotion-Gate (§ 8.4) ab: Bricht durch
+das Übergewicht eine andere Klasse ein, wird nicht befördert. Der Regelkreis ersetzt das
+vorsichtige Raten des Gewichts.
+
+Zur dritten: Mehr desselben hilft hier nie, weil jedes weitere Beispiel dieselbe Abkürzung
+mitträgt. Man subtrahiert nichts, man fügt einen Widerspruch hinzu. Der synthetische
+Generator aus Phase 0 kann solche Gegenbeispiele auf Zuruf erzeugen — ein Zweck über die
+Testdaten hinaus.
+
+Zur vierten: Wird die Temperatur auf einer bequemen Verteilung bestimmt, bleibt sie
+optimistisch. Die Ausbeute der Prüfliste wird deshalb geteilt — der größere Teil ins
+Training, eine stratifizierte Scheibe in die Kalibriermenge.
+
+**Wenn nichts davon hilft**, ist die Klassendefinition schuld, nicht das Modell. Das
+Protokoll zeigt es direkt: `supersedes`-Ketten der Länge ≥ 2 sind Dokumente, die mehrfach
+umgelabelt wurden. Ab da gilt die κ-Diagnose aus § 9.5.1 — `classes.yaml` schärfen, nicht
+weiterlabeln.
+
+**Messen, ob die Korrektur hängengeblieben ist.** Jede bestätigte Korrektur wandert
+zusätzlich in eine wachsende **Regressionsmenge**. Das Promotion-Gate prüft als fünfte
+Bedingung, dass die Trefferquote darauf nicht fällt. Die Kennzahl ist die **Rückfallquote**:
+Anteil früher korrigierter Dokumente, die das neue Modell wieder falsch macht.
+
+Die Regressionsmenge ist **kein zweites Gold-Set**: Sie ist mit Absicht verzerrt — lauter
+schwere Fälle. Sie wird getrennt ausgewiesen und nie in Macro-F1 eingemischt, sonst sieht
+ein Modell umso schlechter aus, je mehr es schon gelernt hat.
+
+### 8.6 Spätere Ausbaustufen
 
 Erst wenn die Schleife läuft und gemessen ist:
 
@@ -811,6 +864,8 @@ Wie im Referenzprojekt: **keine neue Phase, bevor die aktuelle erreicht und gete
 - **Ergebnis:** ~400 Dokumente mit bekannter Wahrheit, davon 350 als eingefrorenes Gold-Set.
 
 ### Phase 1 — Ingestion und Extraktion
+
+> Ausgearbeiteter Umsetzungsplan für Phase 0 und 1: [plan-phase-0-1.md](plan-phase-0-1.md)
 - Formaterkennung, Extraktoren für PDF/DOCX/XLSX/EML, Normalisierung, Parquet-Ausgabe.
 - Inkrementell über den Inhalts-Hash; Mail-Anhänge als eigene Dokumente mit Elternbezug.
 - **Ergebnis:** 400 Dokumente aller Formate eingelesen; `texts.parquet` mit
