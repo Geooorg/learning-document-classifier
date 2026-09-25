@@ -33,6 +33,12 @@ module-name = "doccls"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # SWIG-Bindings in pymupdf melden unter Python 3.14 fehlende __module__-Attribute.
+    # Fremdcode, nicht von uns behebbar. Eng gefasst, damit eigene Warnungen sichtbar bleiben.
+    "ignore:builtin type Swig.* has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100
@@ -44,3 +50,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
 strict = true
+untyped_calls_exclude = ["pymupdf"]
+# pymupdf bringt py.typed mit, annotiert seine Funktionen aber nicht. Ohne diese Ausnahme
+# müsste jede Aufrufstelle einzeln entschärft werden; disallow_untyped_calls bleibt für
+# alles Übrige in Kraft.
