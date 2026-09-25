@@ -1,0 +1,46 @@
+[project]
+name = "doccls"
+version = "0.1.0"
+description = "Lernfähige semantische Dokumentklassifikation"
+requires-python = ">=3.14"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "polars>=1.44.2",
+    "puremagic>=1.28",
+    "pyarrow>=25.0.1",
+    "pydantic>=2.13.5",
+    "pymupdf>=1.28.2",
+    "python-docx>=1.2.0",
+    "pyyaml>=6.0.2",
+]
+
+[dependency-groups]
+dev = [
+    "duckdb>=1.5.5",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+    "types-openpyxl>=3.1.5.20260827",
+    "types-pyyaml>=6.0.12",
+]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "doccls"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+# docs/ enthält Python-Beispiele in Markdown; ruff würde sie umformatieren.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+strict = true
