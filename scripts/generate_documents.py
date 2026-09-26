@@ -14,6 +14,7 @@ from pathlib import Path
 from doccls.config import GENERATED_DIR, RAW_DIR
 from doccls.generation.content import build_corpus
 from doccls.generation.manifest import (
+    anhang_namen,
     assign_document_names,
     assign_splits,
     compare_with_frozen,
@@ -54,7 +55,11 @@ def main() -> None:
     #
     # Die Dateinamen selbst sind neutral (siehe assign_document_names) – weder der
     # Dateiname noch, für Mailanhänge, der Anhangname dürfen den Klassenschlüssel tragen.
-    # Klasse und Vorlage stehen ausschließlich im Manifest.
+    # Klasse und Vorlage stehen ausschließlich im Manifest. Der Anhangname wird deshalb
+    # nicht hier zusammengesetzt, sondern von anhang_namen (manifest.py) erfragt – derselben
+    # Funktion, die manifest_frame gleich danach für dieselbe Zeile befragt. Zwei Stellen,
+    # die den Namen unabhängig bilden, liefen sonst irgendwann auseinander (siehe deren
+    # Docstring).
     namen = assign_document_names(korpus)
     pfade: list[Path] = []
     zwischenablage = args.out.parent / "tmp-anhaenge"
@@ -62,8 +67,19 @@ def main() -> None:
         fmt = spec.formats[0]
         basis = args.out / fmt / name
         if hat_mailanhang(spec):
+            # ``write`` hängt nur die Endung an (``with_suffix``) – der Zielpfad steht also
+            # schon vor dem Schreiben fest. Der Assert danach sichert genau diese Annahme:
+            # anhang_namen bekommt wirklich den Pfad, den write gleich zurückgibt, nicht
+            # einen geratenen.
+            ziel = basis.with_suffix(".eml")
+            anhang_name = anhang_namen(spec, ziel)[0]
             anhang = write(zwischenablage / name, spec, "pdf").read_bytes()
-            pfade.append(write(basis, spec, "eml", attachment=(f"{name}.pdf", anhang)))
+            geschrieben = write(basis, spec, "eml", attachment=(anhang_name, anhang))
+            assert geschrieben == ziel, (
+                f"write() hat {geschrieben} geschrieben, erwartet wurde {ziel} – "
+                "anhang_namen bekam den falschen Pfad."
+            )
+            pfade.append(geschrieben)
         else:
             pfade.append(write(basis, spec, fmt))
     shutil.rmtree(zwischenablage, ignore_errors=True)

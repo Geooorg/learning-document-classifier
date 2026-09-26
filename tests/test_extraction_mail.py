@@ -7,7 +7,7 @@ from email.policy import SMTP
 from email.policy import default as default_policy
 from pathlib import Path
 
-from conftest import pfade_fuer_klasse_und_format, pfade_fuer_vorlage
+from helpers import pfade_fuer_klasse_und_format, pfade_fuer_vorlage
 
 from doccls.config import RAW_DIR
 from doccls.extraction import extract

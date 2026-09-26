@@ -56,6 +56,21 @@ def normalize_text(text: str) -> str:
     return WHITESPACE.sub(" ", text).strip()
 
 
+ANHANG_TRENNER = "!"
+"""Trennt im ``source_path`` eines Mailanhangs den Pfad der Elternmail vom Anhangnamen
+(``eml/doc-0001.eml!doc-0001.pdf``). Sowohl ``pipeline.py`` (bildet den Pfad beim
+tatsächlichen Einlesen) als auch ``generation/manifest.py`` (bildet ihn vorweg für die
+Wahrheit) brauchen exakt dieselbe Regel – zwei unabhängige Kopien liefen irgendwann
+auseinander, und der Fehler wäre unsichtbar: eine Manifestzeile, die kein ``join`` mehr
+trifft."""
+
+
+def anhang_pfad(eltern_pfad: str, anhang_name: str) -> str:
+    """Den ``source_path`` eines Mailanhangs aus dem Pfad der Elternmail und dem Anhangnamen
+    bilden – die einzige Stelle, die das Trennzeichen kennt."""
+    return f"{eltern_pfad}{ANHANG_TRENNER}{anhang_name}"
+
+
 class SegmentKind(StrEnum):
     """Was für eine Einheit ein Segment ist. Bestimmt, wie ``locator`` zu lesen ist."""
 

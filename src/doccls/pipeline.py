@@ -20,7 +20,7 @@ from doccls.detect import MEDIA_TYPES, Format, detect_format
 from doccls.extraction import extract
 from doccls.extraction.mail import extract_eml
 from doccls.extraction.pdf import count_pages
-from doccls.models import SCHEMAS, Document, Segment, to_frame
+from doccls.models import SCHEMAS, Document, Segment, anhang_pfad, to_frame
 from doccls.normalize import strip_boilerplate
 
 TABLES = ("documents", "segments")
@@ -131,7 +131,7 @@ def _process(
     for anhang in anhaenge:
         result.attachments += 1
         kind_dokumente, kind_segmente = _process(
-            f"{source_path}!{anhang.file_name}",
+            anhang_pfad(source_path, anhang.file_name),
             anhang.content,
             now,
             dokument.document_id,

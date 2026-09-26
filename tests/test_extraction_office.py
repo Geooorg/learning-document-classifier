@@ -11,7 +11,7 @@ import docx
 import openpyxl
 import pymupdf
 import pytest
-from conftest import pfade_fuer_vorlage
+from helpers import pfade_fuer_vorlage
 
 from doccls.config import RAW_DIR
 from doccls.extraction import extract

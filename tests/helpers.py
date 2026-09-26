@@ -5,6 +5,11 @@ Baum – einmal in ``test_extraction_mail.py``, einmal in ``test_extraction_offi
 Als die Anhänge eine eigene Manifestzeile bekamen, schlug die eine Kopie fehl und die
 andere nicht, weil ihre Vorlagen zufällig keinen Anhang tragen. Genau so sieht eine Falle
 aus, die beim übernächsten Umbau zuschlägt: zwei Stellen, dieselbe Regel, eine gepflegt.
+
+Absichtlich ``helpers.py``, nicht ``conftest.py``: ``conftest.py`` ist pytests
+Plugin-Datei für Fixtures und Hooks, kein vorgesehenes Importziel. Ein
+``from conftest import …`` funktionierte hier nur zufällig, weil pytest ``tests/`` mangels
+``__init__.py`` auf ``sys.path`` legt.
 """
 
 from pathlib import Path
@@ -12,9 +17,7 @@ from pathlib import Path
 import polars as pl
 
 from doccls.config import GENERATED_DIR, RAW_DIR
-
-ANHANG_TRENNER = "!"
-"""``pipeline.py`` bildet den Pfad eines Mailanhangs als ``<mailpfad>!<anhangname>``."""
+from doccls.models import ANHANG_TRENNER
 
 
 def _manifest_ohne_anhaenge() -> pl.DataFrame:

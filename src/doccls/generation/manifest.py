@@ -22,6 +22,7 @@ import yaml
 
 from doccls.config import PROJECT_ROOT
 from doccls.generation.content import DocumentSpec
+from doccls.models import anhang_pfad
 
 GOLD_TEMPLATES_PER_CLASS = 5
 CALIB_TEMPLATES_PER_CLASS = 1
@@ -206,12 +207,27 @@ def hat_mailanhang(spec: DocumentSpec) -> bool:
     anlegt. Zwei Stellen, die dieselbe Regel unabhängig führen, laufen irgendwann
     auseinander – und der Fehler wäre dann unsichtbar: eine Manifestzeile ohne Datei oder
     eine Datei ohne Wahrheit.
+
+    Geprüft wird ``spec.formats[0]``, nicht ``"eml" in spec.formats``: Der Generator legt
+    das Ausgabeverzeichnis nach ``spec.formats[0]`` an (``args.out / fmt / name``), schreibt
+    bei einem Treffer hier aber immer eine ``.eml`` – bei einer hypothetischen Vorlage mit
+    ``formats=("pdf", "eml")`` läge das Ergebnis dann unter ``pdf/…`` und wäre trotzdem eine
+    Mail, ein Widerspruch zwischen Verzeichnis und Inhalt. Mit ``formats[0] == "eml"`` fallen
+    Verzeichnis und geschriebenes Format immer zusammen; eine Vorlage, die trotzdem beides
+    bräuchte – ein eigenständiges PDF **und** eine Mail mit angehängtem PDF –, gehört als
+    zwei Vorlagen ins Korpus, nicht als eine mit zwei Formaten.
     """
-    return "eml" in spec.formats and spec.template_id.endswith(ANHANG_SUFFIX)
+    return spec.formats[0] == "eml" and spec.template_id.endswith(ANHANG_SUFFIX)
 
 
 def anhang_namen(spec: DocumentSpec, pfad: Path) -> list[str]:
-    """Namen der Anhänge dieser Vorlage, in derselben Schreibweise wie der Generator."""
+    """Namen der Anhänge dieser Vorlage, in derselben Schreibweise wie der Generator.
+
+    Einzige Stelle, die diesen Namen bildet – ``scripts/generate_documents.py`` ruft sie auf,
+    statt ihn selbst zusammenzusetzen, und übergibt dafür den Pfad, den ``write`` tatsächlich
+    erzeugt hat. Zwei unabhängige Formeln für denselben Namen liefen sonst irgendwann
+    auseinander, ohne dass etwas fehlschlägt (vgl. ``hat_mailanhang`` oben).
+    """
     return [f"{pfad.stem}.pdf"] if hat_mailanhang(spec) else []
 
 
@@ -243,7 +259,7 @@ def manifest_frame(
         for anhang_name in anhang_namen(spec, pfad):
             zeilen.append(
                 {
-                    "source_path": f"{relativ}!{anhang_name}",
+                    "source_path": anhang_pfad(relativ, anhang_name),
                     "class_key": spec.class_key,
                     "template_id": spec.template_id,
                     "variant": spec.variant,

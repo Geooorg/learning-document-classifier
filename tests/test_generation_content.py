@@ -11,7 +11,7 @@ from doccls.classes import load_classes
 from doccls.extraction import extract
 from doccls.extraction.mail import extract_eml
 from doccls.generation.content import build_corpus
-from doccls.generation.manifest import assign_document_names
+from doccls.generation.manifest import anhang_namen, assign_document_names
 from doccls.generation.writers import write
 from doccls.models import Document
 from doccls.normalize import strip_boilerplate
@@ -74,6 +74,28 @@ def test_dateiname_verraet_die_klasse_nicht() -> None:
     assert trefferquote <= 0.20, (
         f"Dateiname-Rater trifft {trefferquote:.1%} der Dokumente – der Dateiname verrät die Klasse"
     )
+
+
+def test_anhangname_traegt_keinen_klassenschluessel() -> None:
+    """Ergänzt den vorigen Test um Mailanhänge, die dort nicht vorkommen (er prüft nur
+    ``assign_document_names``). ``anhang_namen`` muss denselben neutralen Namen wie das
+    Elterndokument tragen, nur mit der Endung ``.pdf`` – ein Rückfall auf ein Schema wie
+    ``<template_id>-<variante>.pdf`` trüge den Klassenschlüssel zurück in den Namen und
+    bliebe sonst unbemerkt, weil die Trefferquote des Dateiname-Raters durch die wenigen
+    betroffenen Anhänge kaum merklich steigt (10 von 570 Zeilen)."""
+    korpus = build_corpus()
+    namen = assign_document_names(korpus)
+    anhaenge = [
+        (name, anhang_name)
+        for spec, name in zip(korpus, namen, strict=True)
+        for anhang_name in anhang_namen(spec, Path(name))
+    ]
+    assert anhaenge, "Keine Vorlage traegt einen Mailanhang"
+    for name, anhang_name in anhaenge:
+        assert anhang_name == f"{name}.pdf", (
+            f"Anhangname {anhang_name!r} weicht vom neutralen Namen {name}.pdf ab und "
+            "koennte den Klassenschluessel tragen"
+        )
 
 
 def test_struktur_verraet_die_klasse_nicht(tmp_path: Path) -> None:

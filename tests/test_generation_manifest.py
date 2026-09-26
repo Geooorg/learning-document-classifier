@@ -8,10 +8,11 @@ import polars as pl
 import pytest
 
 from doccls.classes import load_classes
-from doccls.config import GENERATED_DIR, PARQUET_DIR
-from doccls.generation.content import build_corpus
+from doccls.config import GENERATED_DIR, PARQUET_DIR, RAW_DIR
+from doccls.generation.content import DocumentSpec, build_corpus
 from doccls.generation.manifest import (
     Split,
+    assign_document_names,
     assign_splits,
     compare_with_frozen,
     hat_mailanhang,
@@ -20,7 +21,22 @@ from doccls.generation.manifest import (
     report_template_drift,
     save_splits,
 )
+from doccls.models import ANHANG_TRENNER
 from doccls.pipeline import read_table
+
+
+def _pfade_wie_generator(korpus: list[DocumentSpec], namen: list[str], root: Path) -> list[Path]:
+    """Baut dieselben Pfade, die ``scripts/generate_documents.py`` schreiben würde – ``<root>/
+    <erstes Format>/<neutraler Name>.<eml oder erstes Format>`` –, ohne etwas auf die Platte
+    zu schreiben. So lassen sich ``manifest_frame`` und ``anhang_namen`` mit realistischen
+    Pfaden prüfen, ohne den vollen Generatorlauf (PDF/DOCX/XLSX-Rendern) zu wiederholen.
+    """
+    pfade = []
+    for spec, name in zip(korpus, namen, strict=True):
+        fmt = spec.formats[0]
+        endformat = "eml" if hat_mailanhang(spec) else fmt
+        pfade.append(root / fmt / f"{name}.{endformat}")
+    return pfade
 
 
 def test_neue_vorlage_verschiebt_bestehende_nicht() -> None:
@@ -148,15 +164,16 @@ def test_mailanhang_steht_mit_im_manifest() -> None:
     verliert ihn jeder join von documents auf manifest stillschweigend."""
     korpus = build_corpus()
     splits = assign_splits(korpus)
-    next(s for s in korpus if hat_mailanhang(s))
-    pfade = [Path(f"{s.template_id}-{s.variant:02d}.{s.formats[0]}") for s in korpus]
+    assert any(hat_mailanhang(s) for s in korpus), "Keine Vorlage traegt einen Mailanhang"
+    namen = assign_document_names(korpus)
+    pfade = _pfade_wie_generator(korpus, namen, Path("."))
 
     rahmen = manifest_frame(korpus, splits, pfade, Path("."))
 
-    anhaenge = rahmen.filter(pl.col("source_path").str.contains("!"))
+    anhaenge = rahmen.filter(pl.col("source_path").str.contains(ANHANG_TRENNER, literal=True))
     assert anhaenge.height > 0, "Kein Anhang im Manifest – die Mailvorlagen tragen keinen"
     for zeile in anhaenge.iter_rows(named=True):
-        eltern_pfad = zeile["source_path"].split("!")[0]
+        eltern_pfad = zeile["source_path"].split(ANHANG_TRENNER)[0]
         eltern = rahmen.filter(pl.col("source_path") == eltern_pfad)
         assert eltern.height == 1, f"Elternmail {eltern_pfad} fehlt im Manifest"
         assert zeile["split"] == eltern["split"][0], (
@@ -165,18 +182,61 @@ def test_mailanhang_steht_mit_im_manifest() -> None:
             "Textaehnlichkeit auf beiden Seiten des Gold-Schnitts"
         )
         assert zeile["class_key"] == eltern["class_key"][0]
+        assert zeile["format"] == "pdf", (
+            f"{zeile['source_path']}: Format {zeile['format']!r}, erwartet 'pdf' – "
+            "Mailanhaenge sind in diesem Korpus immer PDFs, unabhaengig vom Anhangnamen"
+        )
+
+
+def test_manifest_frame_stimmt_mit_eingelesenem_bestand_ueberein() -> None:
+    """Bindet ``manifest_frame`` selbst an den eingelesenen Bestand.
+
+    ``test_jedes_eingelesene_dokument_hat_eine_wahrheit`` liest die auf Platte liegende
+    ``manifest.parquet`` – eine Mutation in ``manifest_frame`` oder ``anhang_namen`` sieht
+    dieser Test also gar nicht, solange niemand neu erzeugt und neu eingelesen hat. Hier
+    wird ``manifest_frame`` mit den echten Namen (``assign_document_names``) und den Pfaden,
+    die der Generator erzeugen würde, direkt aufgerufen und sein Ergebnis gegen den
+    tatsächlich eingelesenen Bestand (``data/parquet/documents.parquet``) gestellt.
+    """
+    korpus = build_corpus()
+    splits = assign_splits(korpus, frozen=load_frozen_splits())
+    namen = assign_document_names(korpus)
+    pfade = _pfade_wie_generator(korpus, namen, RAW_DIR)
+
+    rahmen = manifest_frame(korpus, splits, pfade, root=RAW_DIR)
+    dokumente = read_table(PARQUET_DIR, "documents")
+
+    berechnet = set(rahmen["source_path"])
+    eingelesen = set(dokumente["source_path"])
+    nur_berechnet = berechnet - eingelesen
+    nur_eingelesen = eingelesen - berechnet
+    assert not nur_berechnet and not nur_eingelesen, (
+        f"{len(nur_berechnet)} von manifest_frame berechnete Pfade fehlen im eingelesenen "
+        f"Bestand: {sorted(nur_berechnet)[:5]}; "
+        f"{len(nur_eingelesen)} eingelesene Pfade fehlen im berechneten Manifest: "
+        f"{sorted(nur_eingelesen)[:5]}"
+    )
 
 
 def test_jedes_eingelesene_dokument_hat_eine_wahrheit() -> None:
     """Die Gegenprobe am echten Bestand: documents und manifest müssen deckungsgleich sein.
 
-    Ohne diesen Test bliebe die Luecke unbemerkt, sobald eine neue Dokumentart hinzukommt,
-    die erst beim Einlesen entsteht (etwa ein ZIP-Eintrag oder eine verschachtelte Mail).
+    Beide Richtungen zählen: Ein eingelesenes Dokument ohne Manifestzeile bliebe unbemerkt,
+    sobald eine neue Dokumentart hinzukommt, die erst beim Einlesen entsteht (etwa ein
+    ZIP-Eintrag oder eine verschachtelte Mail). Eine Manifestzeile ohne eingelesenes
+    Dokument – etwa weil ``anhang_namen`` einen anderen Namen liefert als tatsächlich
+    eingelesen wurde – fiele bei einem reinen ``anti``-Join von documents auf manifest nie
+    auf, weil der nur die erste Richtung prüft.
     """
     dokumente = read_table(PARQUET_DIR, "documents")
     manifest = pl.read_parquet(GENERATED_DIR / "manifest.parquet")
-    ohne_wahrheit = dokumente.join(manifest.select("source_path"), on="source_path", how="anti")
-    assert ohne_wahrheit.height == 0, (
-        f"{ohne_wahrheit.height} eingelesene Dokumente haben keine Zeile im Manifest: "
-        f"{ohne_wahrheit['source_path'].to_list()[:5]}"
+    pfade_dokumente = set(dokumente["source_path"])
+    pfade_manifest = set(manifest["source_path"])
+    ohne_wahrheit = pfade_dokumente - pfade_manifest
+    ohne_dokument = pfade_manifest - pfade_dokumente
+    assert not ohne_wahrheit and not ohne_dokument, (
+        f"{len(ohne_wahrheit)} eingelesene Dokumente ohne Zeile im Manifest: "
+        f"{sorted(ohne_wahrheit)[:5]}; "
+        f"{len(ohne_dokument)} Manifestzeilen ohne eingelesenes Dokument: "
+        f"{sorted(ohne_dokument)[:5]}"
     )

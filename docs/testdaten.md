@@ -1,17 +1,25 @@
 # Testdaten: die bekannte Wahrheit
 
 Erzeugt von `scripts/generate_documents.py` (Seed 42). 56 Vorlagen, je 10 Varianten,
-560 Dokumente über 7 Klassen und 4 Formate.
+560 geschriebene **Dateien** über 7 Klassen und 4 Formate. Ein Mailanhang schreibt der
+Generator nie als eigene Datei (siehe „Mailanhänge“ unten) – er entsteht erst beim
+Einlesen. Gezählt als **Dokumente und Manifestzeilen** (Datei plus jeder Anhang) sind es
+570, verteilt auf die Splits wie unten.
 
 ## Aufteilung
 
-Der Schnitt läuft über `template_id`, nicht über Dokumente (Konzept § 9.2). Je Klasse:
+Der Schnitt läuft über `template_id`, nicht über Dokumente (Konzept § 9.2). Je Klasse, in
+Dokumenten (nicht Dateien – siehe oben):
 
 | Split | Vorlagen | Dokumente | Verwendung |
 |---|---|---|---|
-| `gold` | 5 | 50 | eingefroren; nie Training, nie Kalibrierung, nie in der Prüfliste |
+| `gold` | 5 | 50 (`RECHNUNG`: 60) | eingefroren; nie Training, nie Kalibrierung, nie in der Prüfliste |
 | `train` | 2 | 20 | Trainingsvorrat |
 | `calib` | 1 | 10 | Temperature Scaling, Schwellen τ und δ |
+
+`RECHNUNG` hat im Gold-Split zehn Zeilen mehr als jede andere Klasse: Die Vorlage
+`RECHNUNG-mail-anhang` liegt dort, und jede ihrer zehn Varianten bringt eine zusätzliche
+Anhangszeile mit (siehe „Mailanhänge“ unten).
 
 Der Schnitt selbst steht in `config/splits.yaml` und ist versioniert. Er wird nicht bei
 jedem Lauf neu gewürfelt: `random.Random(...).shuffle()` auf einer Liste, deren Länge sich
