@@ -574,7 +574,7 @@ git commit -m "Merkmalsparameter und berechnete Merkmalsversion"
 - Anlegen: `tests/test_features_text.py`
 
 **Schnittstellen:**
-- Nutzt: `Segment` aus `doccls.models`, `strip_boilerplate` aus `doccls.normalize`
+- Nutzt: `Segment` aus `doccls.models`
 - Liefert:
   - `document_text(segments: list[Segment]) -> str`
   - `chunks(text: str, chunk_chars: int) -> list[str]`
@@ -655,7 +655,7 @@ def test_positionsgewichte_fallen_und_summieren_sich_zu_eins() -> None:
     """Konzept § 6.1: w_i = 1/(1 + i/4), normiert. Frueh zaehlt mehr."""
     gewichte = position_weights(5, decay=4.0)
     assert math.isclose(sum(gewichte), 1.0)
-    assert all(a > b for a, b in zip(gewichte, gewichte[1:], strict=True)), (
+    assert all(a > b for a, b in zip(gewichte, gewichte[1:], strict=False)), (
         "Die Gewichte muessen streng fallen – sonst zaehlt der Dokumentkopf nicht mehr"
     )
 
