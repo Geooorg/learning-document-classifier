@@ -19,6 +19,7 @@ from doccls.config import MIN_CHARS_PER_PAGE
 from doccls.detect import MEDIA_TYPES, Format, detect_format
 from doccls.extraction import extract
 from doccls.extraction.mail import extract_eml
+from doccls.extraction.pdf import count_pages
 from doccls.models import SCHEMAS, Document, Segment, to_frame
 from doccls.normalize import strip_boilerplate
 
@@ -55,14 +56,21 @@ def _write_table(parquet_dir: Path, name: str, neu: pl.DataFrame) -> None:
     zusammen.write_parquet(parquet_dir / f"{name}.parquet")
 
 
-def _needs_ocr(segments: list[Segment], format_: Format) -> bool:
+def _needs_ocr(segments: list[Segment], format_: Format, page_count: int) -> bool:
     """Zu wenig Text je Seite spricht für einen Scan. Die Entscheidung wird vermerkt,
-    damit später auswertbar ist, ob OCR-Dokumente systematisch schlechter abschneiden."""
+    damit später auswertbar ist, ob OCR-Dokumente systematisch schlechter abschneiden.
+
+    Geteilt wird durch die tatsächliche Seitenzahl der Quelle, nicht durch die Zahl der
+    Segmente: ``extract_pdf`` überspringt textlose Seiten, sie fehlen also in ``segments``.
+    Eine Division durch ``len(segments)`` würde genau die Seiten aus dem Nenner entfernen,
+    die die Schwelle eigentlich fangen soll – ein zehnseitiger Scan mit getipptem Deckblatt
+    ginge dann mit einem Segment und vollem Zeichenschnitt als Textdokument durch.
+    """
     if format_ is not Format.PDF:
         return False
-    if not segments:
+    if page_count == 0:
         return True
-    return sum(len(s.text) for s in segments) / len(segments) < MIN_CHARS_PER_PAGE
+    return sum(len(s.text) for s in segments) / page_count < MIN_CHARS_PER_PAGE
 
 
 def _process(
@@ -89,8 +97,10 @@ def _process(
     try:
         if format_ is Format.EML:
             segmente, anhaenge = extract_eml(dokument, data)
+            page_count = 0
         else:
             segmente, anhaenge = extract(dokument, data), []
+            page_count = count_pages(data) if format_ is Format.PDF else 0
     except Exception:
         # Eine kaputte oder unbekannte Datei darf den Lauf nicht beenden. Sie wird vermerkt
         # und taucht in der Zusammenfassung auf; ein stiller Abbruch wäre schlimmer.
@@ -104,7 +114,7 @@ def _process(
         if text
     ]
 
-    dokument = dokument.model_copy(update={"needs_ocr": _needs_ocr(segmente, format_)})
+    dokument = dokument.model_copy(update={"needs_ocr": _needs_ocr(segmente, format_, page_count)})
     known.add(dokument.document_id)
     result.documents += 1
     result.segments += len(segmente)

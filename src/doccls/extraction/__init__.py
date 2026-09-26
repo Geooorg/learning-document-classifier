@@ -3,10 +3,18 @@
 from doccls.detect import Format, detect_format
 from doccls.extraction.mail import Attachment, extract_eml
 from doccls.extraction.office import extract_docx, extract_xlsx
-from doccls.extraction.pdf import extract_pdf
+from doccls.extraction.pdf import count_pages, extract_pdf
 from doccls.models import Document, Segment
 
-__all__ = ["Attachment", "extract", "extract_docx", "extract_eml", "extract_pdf", "extract_xlsx"]
+__all__ = [
+    "Attachment",
+    "count_pages",
+    "extract",
+    "extract_docx",
+    "extract_eml",
+    "extract_pdf",
+    "extract_xlsx",
+]
 
 
 def extract(document: Document, data: bytes) -> list[Segment]:

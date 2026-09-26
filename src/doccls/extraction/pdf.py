@@ -34,6 +34,18 @@ def heading_by_font_size(page: pymupdf.Page) -> str | None:
     return normalize_text(text)
 
 
+def count_pages(data: bytes) -> int:
+    """Tatsächliche Seitenzahl der Quelle – unabhängig von der Zahl der Segmente.
+
+    ``extract_pdf`` überspringt textlose Seiten; ihre Segmentzahl darf deshalb nicht als
+    Nenner für den Anteil auswertbaren Texts je Seite dienen (siehe ``pipeline._needs_ocr``).
+    Ein zehnseitiger Scan mit getipptem Deckblatt läge sonst bei einem Segment und einem
+    hohen Zeichenschnitt – und ginge als vollwertiges Textdokument durch.
+    """
+    with pymupdf.open(stream=data, filetype="pdf") as pdf:
+        return len(pdf)
+
+
 def extract_pdf(document: Document, data: bytes) -> list[Segment]:
     segmente: list[Segment] = []
     with pymupdf.open(stream=data, filetype="pdf") as pdf:

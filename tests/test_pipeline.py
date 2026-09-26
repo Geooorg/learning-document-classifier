@@ -176,6 +176,40 @@ def test_gescanntes_pdf_wird_als_ocr_bedürftig_markiert(tmp_path: Path) -> None
     assert dokumente.filter(pl.col("file_name") == "scan.pdf")["needs_ocr"][0] is True
 
 
+def test_teilgescanntes_pdf_wird_als_ocr_beduerftig_markiert(tmp_path: Path) -> None:
+    """K1: ``extract_pdf`` überspringt textlose Seiten mit dem Kommentar „needs_ocr fängt
+    sie" – aber ``_needs_ocr`` teilte bisher durch die Zahl der übriggebliebenen Segmente,
+    nicht durch die tatsächliche Seitenzahl. Genau die Seiten, die die Schwelle fangen
+    soll, waren vorher aus dem Nenner entfernt: Ein PDF mit einer Textseite und neun
+    Scanseiten lieferte ein Segment und blieb bei vollem Zeichenschnitt unter der Schwelle
+    – needs_ocr wäre ``False`` geblieben, obwohl 90 % der Seiten gescannt sind.
+    """
+    import pymupdf
+
+    roh = tmp_path / "raw"
+    roh.mkdir(parents=True)
+    dok = pymupdf.open()
+    seite = dok.new_page(width=595, height=842)
+    seite.insert_text(
+        (72, 100),
+        "Diese Seite enthaelt ausreichend echten Fliesstext fuer die Pruefung des Zeichenschnitts.",
+        fontsize=12,
+    )
+    for _ in range(9):
+        dok.new_page(width=595, height=842)
+    dok.save(roh / "teilgescannt.pdf", no_new_id=True)
+    dok.close()
+
+    ingest(roh, tmp_path / "parquet")
+    dokumente = read_table(tmp_path / "parquet", "documents")
+    zeile = dokumente.filter(pl.col("file_name") == "teilgescannt.pdf")
+    assert zeile.height == 1
+    assert zeile["needs_ocr"][0] is True, (
+        "Ein Segment auf zehn Seiten (nur die getippte Seite) darf nicht als "
+        "vollwertiges Textdokument durchgehen"
+    )
+
+
 def test_kein_erzeugtes_pdf_gilt_als_ocr_beduerftig() -> None:
     """Die OCR-Schwelle trennt Scan von Textebene – sie darf nicht in die Verteilung der
     echten Dokumente hineinschneiden.
