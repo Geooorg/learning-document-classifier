@@ -113,11 +113,35 @@ def extract_docx(document: Document, data: bytes) -> list[Segment]:
     return segmente
 
 
+def _zellanzeige(wert: object, formel: object) -> str:
+    """Sichtbarer Text einer einzelnen Zelle.
+
+    ``data_only=True`` liefert für eine Formelzelle ohne zwischengespeicherten Wert
+    ``None`` – ununterscheidbar von einer wirklich leeren Zelle. ERP- und
+    Streaming-Exporter legen diesen Cache oft gar nicht erst an (dieselbe Erzeugerklasse,
+    die schon beim ``<dimension ref>``-Platzhalter unten auffällig wurde). Fehlt der Wert
+    und war die Zelle laut dem zweiten, ohne ``data_only`` gelesenen Durchlauf eine Formel,
+    wird ersatzweise die Formel selbst sichtbar gemacht: Ein Betrag, der spurlos
+    verschwindet, ist der schlimmere Fehler als eine sichtbar unaufgelöste Formel – gerade
+    weil der Betrag oft das entscheidende Unterscheidungsmerkmal ist (Rechnung vs.
+    Gutschrift).
+    """
+    if wert is not None:
+        return str(wert).strip()
+    if isinstance(formel, str) and formel.startswith("="):
+        return formel.strip()
+    return ""
+
+
 def extract_xlsx(document: Document, data: bytes) -> list[Segment]:
+    # Zweimal geladen: einmal mit zwischengespeicherten Werten (``data_only=True``), einmal
+    # mit den rohen Formeln. Eine Formelzelle ohne Cache liefert im ersten Durchlauf
+    # ``None`` und wird im zweiten als Formelstring sichtbar – siehe ``_zellanzeige``.
     mappe = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    formeln = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
     try:
         segmente: list[Segment] = []
-        for blatt in mappe.worksheets:
+        for blatt, formel_blatt in zip(mappe.worksheets, formeln.worksheets, strict=True):
             # Das <dimension ref>-Attribut der Blatt-XML ist oft nur ein Platzhalter
             # (z. B. "A1") bei Erzeugern, die die Ausdehnung beim Schreiben nicht kennen.
             # openpyxl vertraut ihm im read_only-Modus blind und verwirft sonst Spalten
@@ -127,16 +151,22 @@ def extract_xlsx(document: Document, data: bytes) -> list[Segment]:
             # das verschöbe kopf/zeile in der Zuordnung unten, sobald eine Zeile (etwa die
             # Kopfzeile) kürzer ist als eine andere. Deshalb wird hier selbst auf die
             # größte tatsächlich gelesene Zeilenbreite aufgefüllt, statt sich auf eine
-            # interne openpyxl-Neuberechnung zu verlassen.
+            # interne openpyxl-Neuberechnung zu verlassen. Beide Durchläufe werden
+            # gleichermaßen nachgemessen, sonst gilt der Fix nur für den ersten.
             blatt.reset_dimensions()
+            formel_blatt.reset_dimensions()
             rohzeilen = list(blatt.iter_rows(values_only=True))
+            formelzeilen = list(formel_blatt.iter_rows(values_only=True))
             breite = max((len(zeile) for zeile in rohzeilen), default=0)
             zeilen = [
                 [
-                    ("" if i >= len(zeile) or zeile[i] is None else str(zeile[i])).strip()
+                    _zellanzeige(
+                        None if i >= len(zeile) else zeile[i],
+                        None if i >= len(formelzeile) else formelzeile[i],
+                    )
                     for i in range(breite)
                 ]
-                for zeile in rohzeilen
+                for zeile, formelzeile in zip(rohzeilen, formelzeilen, strict=True)
             ]
             zeilen = [zeile for zeile in zeilen if any(zeile)]
             if not zeilen:
@@ -174,3 +204,4 @@ def extract_xlsx(document: Document, data: bytes) -> list[Segment]:
         return segmente
     finally:
         mappe.close()
+        formeln.close()

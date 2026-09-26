@@ -402,6 +402,72 @@ def test_xlsx_kopfzeile_ohne_leere_spalten_im_text() -> None:
     assert segmente[0].text == "Leistung | Menge | Leistung: Abnahme, Menge: 1, : 10, : 10"
 
 
+def _xlsx_mit_summenzelle(mit_formel: bool) -> bytes:
+    """Identische Mappe, einmal mit einer Formel in der letzten Spalte, einmal mit dem
+    fertigen Wert – wie im Schlussbefund (K3) beschrieben. Eine per API mit ``blatt.append``
+    gesetzte Formel hat keinen zwischengespeicherten Wert, genau wie bei ERP- und
+    Streaming-Exportern, die den Cache beim Schreiben nicht mitführen.
+    """
+    mappe = openpyxl.Workbook()
+    blatt = mappe.active
+    assert blatt is not None
+    blatt.title = "Rechnung"
+    blatt.append(["Pos", "Menge", "Einzelpreis", "Summe"])
+    letzte_spalte: str | int = "=B2*C2" if mit_formel else 750
+    blatt.append([1, 3, 250, letzte_spalte])
+    puffer = io.BytesIO()
+    mappe.save(puffer)
+    return puffer.getvalue()
+
+
+def test_xlsx_formelzelle_ohne_cache_wird_nicht_verschluckt() -> None:
+    """K3: ``data_only=True`` liefert für eine Formelzelle ohne zwischengespeicherten Wert
+    ``None`` – ununterscheidbar von einer echten Leerzelle. Die Spaltenüberschrift „Summe"
+    bliebe stehen, der Betrag würde aber lautlos verschwinden, obwohl gerade er das
+    entscheidende Unterscheidungsmerkmal zwischen Rechnung und Gutschrift ist.
+    """
+    daten = _xlsx_mit_summenzelle(mit_formel=True)
+    doc = dokument_aus_bytes(daten, "formel.xlsx", MEDIA_TYPE_XLSX)
+
+    segmente = extract(doc, daten)
+    assert len(segmente) == 1
+    text = segmente[0].text
+    assert "Summe:" in text, "Spalte 'Summe' fehlt vollständig"
+    nach_summe = text.split("Summe:", 1)[1].strip()
+    assert nach_summe and not nach_summe.startswith(("None", ",")), (
+        f"Formelzelle wurde verschluckt statt sichtbar gemacht: {text!r}"
+    )
+    assert "=B2*C2" in text, "Die Formel selbst sollte als Ersatz für den fehlenden Wert stehen"
+
+
+def test_xlsx_formelzelle_mit_cache_liefert_den_wert() -> None:
+    """Gegenprobe zu K3: Trägt die Zelle bereits den fertigen Wert (wie eine von Excel
+    gespeicherte Datei mit aufgelöstem Formel-Cache), muss dieser unverändert ankommen.
+    """
+    daten = _xlsx_mit_summenzelle(mit_formel=False)
+    doc = dokument_aus_bytes(daten, "formel_mit_wert.xlsx", MEDIA_TYPE_XLSX)
+
+    segmente = extract(doc, daten)
+    assert len(segmente) == 1
+    assert "Summe: 750" in segmente[0].text
+
+
+def test_xlsx_ueberlebt_falsche_dimension_angabe_trotz_zweitem_ladevorgang() -> None:
+    """Der K3-Fix lädt die Mappe zweimal (``data_only=True`` und ``False``). Beide
+    Ladevorgänge müssen ``reset_dimensions()`` unabhängig anwenden – sonst gälte die
+    Korrektur aus einem früheren Befund (falsches ``<dimension ref>``) nur noch für den
+    ersten Durchlauf und der zweite würde Zeilen unterschiedlicher Länge liefern.
+    """
+    daten = _xlsx_mit_kaputter_dimension()
+    doc = dokument_aus_bytes(daten, "rechnung.xlsx", MEDIA_TYPE_XLSX)
+
+    segmente = extract(doc, daten)
+    assert len(segmente) == 1
+    text = segmente[0].text
+    assert text.count("Einzelpreis:") == 3
+    assert text.count("Abnahme") == 3
+
+
 def test_text_ist_normalisiert() -> None:
     doc, daten = dokument(erste("pdf"), MEDIA_TYPE_PDF)
     segmente = extract(doc, daten)
