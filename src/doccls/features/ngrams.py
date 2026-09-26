@@ -40,6 +40,17 @@ class NgramBlock:
         """Nur mit Trainingstexten aufrufen – siehe Moduldoc."""
         matrix = self._vectorizer.fit_transform(texts)
         self._svd.fit(matrix)
+        # TruncatedSVD kappt die Komponentenzahl stillschweigend auf die Zahl der Texte:
+        # Auf den 140 Trainingstexten lieferte svd_components=256 nur 140 Spalten, während
+        # ``dimension`` weiter 256 zusicherte. Die Breite hinge dann von der Größe der
+        # Trainingsmenge ab, die in keine feature_version eingeht.
+        breite = self._svd.components_.shape[0]
+        if breite != self.dimension:
+            raise ValueError(
+                f"svd_components={self.dimension} ist nicht erreichbar: Die SVD liefert auf "
+                f"{len(texts)} Texten nur {breite} Komponenten. svd_components in "
+                "config/features.yaml muss unter der Zahl der Trainingstexte liegen."
+            )
         self._angepasst = True
 
     def _pruefe_angepasst(self) -> None:

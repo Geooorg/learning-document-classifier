@@ -16,21 +16,39 @@ TRAININGSTEXTE = [
 ]
 
 
-def block(*, ngram_min: int = 3, ngram_max: int = 5) -> NgramBlock:
+def block(
+    *,
+    ngram_min: int = 3,
+    ngram_max: int = 5,
+    svd_components: int = 4,
+    ngram_max_features: int = 2000,
+) -> NgramBlock:
     konfiguration = FeatureConfig(
-        svd_components=4,
-        ngram_max_features=2000,
+        svd_components=svd_components,
+        ngram_max_features=ngram_max_features,
         ngram_min=ngram_min,
         ngram_max=ngram_max,
     )
     return build_ngram_block(konfiguration)
 
 
-def test_transform_liefert_die_zugesicherte_breite() -> None:
-    b = block()
+@pytest.mark.parametrize("komponenten", [3, 4])
+def test_transform_liefert_die_zugesicherte_breite(komponenten: int) -> None:
+    """Zwei Werte, weil alle uebrigen Tests svd_components=4 benutzen: Ein fest
+    verdrahtetes ``n_components=4`` oder ``dimension = 4`` bliebe sonst unbemerkt."""
+    b = block(svd_components=komponenten)
     b.fit(TRAININGSTEXTE)
-    assert b.transform(TRAININGSTEXTE).shape == (len(TRAININGSTEXTE), b.dimension)
-    assert b.dimension == 4
+    assert b.dimension == komponenten
+    assert b.transform(TRAININGSTEXTE).shape == (len(TRAININGSTEXTE), komponenten)
+
+
+def test_mehr_komponenten_als_texte_wirft_statt_schmaler_zu_liefern() -> None:
+    """TruncatedSVD liefert hoechstens so viele Komponenten, wie es Texte gibt – ohne
+    Warnung. Mit der Produktivkonfiguration (256) ergab das auf den 140 Trainingstexten
+    140 Spalten bei zugesicherten 256."""
+    b = block(svd_components=len(TRAININGSTEXTE) + 1)
+    with pytest.raises(ValueError, match="svd_components"):
+        b.fit(TRAININGSTEXTE)
 
 
 def test_kompositum_liegt_naeher_am_grundwort_als_an_fremdem_wort() -> None:
@@ -62,19 +80,36 @@ def test_tippfehler_bleibt_nah_am_original() -> None:
     assert float(normiert[0] @ normiert[1]) > float(normiert[0] @ normiert[2])
 
 
-def test_transform_ohne_fit_wirft() -> None:
+@pytest.mark.parametrize("zugriff", ["transform", "tfidf_only", "vokabular"])
+def test_zugriff_ohne_fit_wirft(zugriff: str) -> None:
     """Ein nicht angepasster Block darf keine Nullen liefern – das traegt sich lautlos
-    durch bis in die Metriken."""
+    durch bis in die Metriken. Gilt fuer alle drei Zugriffe, nicht nur fuer transform."""
+    methode = getattr(block(), zugriff)
+    argumente = [] if zugriff == "vokabular" else [TRAININGSTEXTE]
     with pytest.raises(RuntimeError, match="fit"):
-        block().transform(TRAININGSTEXTE)
+        methode(*argumente)
+
+
+def silbentexte(anzahl: int) -> list[str]:
+    """Genug Texte, dass die SVD mehr Rang hat als Komponenten verlangt werden."""
+    zufall = np.random.default_rng(0)
+    silben = ["rech", "nung", "be", "trag", "miet", "ver", "kuen", "di", "gung", "frist"]
+    silben += ["pro", "to", "koll", "sta", "tus", "richt", "gut", "schrift", "lie", "fer"]
+    return [" ".join("".join(zufall.choice(silben, 3)) for _ in range(12)) for _ in range(anzahl)]
 
 
 def test_fit_ist_reproduzierbar() -> None:
-    """TruncatedSVD ist randomisiert. Ohne festen Seed waeren zwei Laeufe unvergleichbar."""
-    a, b = block(), block()
-    a.fit(TRAININGSTEXTE)
-    b.fit(TRAININGSTEXTE)
-    assert np.allclose(a.transform(TRAININGSTEXTE), b.transform(TRAININGSTEXTE))
+    """TruncatedSVD ist randomisiert – aber nur dort, wo der Seed Angriffsflaeche hat.
+
+    Auf den sechs TRAININGSTEXTEN mit vier Komponenten ist die randomisierte SVD bereits
+    exakt; ein fehlender Seed bliebe dort gruen. Gemessen: Bei 20 Texten und 3 Komponenten
+    weichen zwei Seeds um rund 0,07 ab, bei 140 echten Trainingstexten und 64 Komponenten
+    in 12 Komponenten um bis zu 0,01."""
+    texte = silbentexte(20)
+    a, b = block(svd_components=3), block(svd_components=3)
+    a.fit(texte)
+    b.fit(texte)
+    assert np.allclose(a.transform(texte), b.transform(texte))
 
 
 def test_unbekannter_text_ergibt_keinen_nullvektor() -> None:
@@ -102,9 +137,36 @@ def test_ngram_bereich_kommt_aus_der_konfiguration_und_ist_nicht_fest_verdrahtet
     Vectorizer wuerde deshalb von keinem der Tests oben bemerkt. Hier wird der Bereich
     explizit auf einen abweichenden Wert gesetzt und ueber die tatsaechlichen
     Vokabularlaengen geprueft."""
-    schmal = block(ngram_min=3, ngram_max=5)
+    schmal = block(ngram_min=3, ngram_max=5, svd_components=1)
     schmal.fit(LANGE_WOERTER)
-    breit = block(ngram_min=8, ngram_max=10)
+    breit = block(ngram_min=8, ngram_max=10, svd_components=1)
     breit.fit(LANGE_WOERTER)
     assert {len(eintrag) for eintrag in schmal.vokabular()} == {3, 4, 5}
     assert {len(eintrag) for eintrag in breit.vokabular()} == {8, 9, 10}
+
+
+def test_vokabular_wird_auf_ngram_max_features_begrenzt() -> None:
+    """Alle anderen Tests benutzen 2000, und sechs Texte erreichen diese Grenze nie – der
+    Parameter waere sonst ungebunden."""
+    b = block(ngram_max_features=25)
+    b.fit(TRAININGSTEXTE)
+    assert len(b.vokabular()) == 25
+
+
+def test_gross_und_kleinschreibung_ergeben_denselben_vektor() -> None:
+    """Versalien in Betreffzeilen und Kopfzeilen ("RECHNUNG") duerfen kein eigenes
+    Vokabular bilden."""
+    b = block()
+    b.fit(TRAININGSTEXTE)
+    roh = b.tfidf_only(["RECHNUNG ZAHLUNGSZIEL", "Rechnung Zahlungsziel"])
+    assert np.linalg.norm(roh[0]) > 0.0
+    assert np.allclose(roh[0], roh[1])
+
+
+def test_ngramme_ueberspannen_keine_wortgrenze() -> None:
+    """``char_wb`` statt ``char``: Leerzeichen stehen nur am Rand eines n-Gramms, nie
+    zwischen zwei Woertern. Ein Wechsel auf ``char`` gehoert nach features.yaml und in die
+    feature_version (Plan Aufgabe 7), nicht still in den Code."""
+    b = block()
+    b.fit(TRAININGSTEXTE)
+    assert all(" " not in eintrag.strip() for eintrag in b.vokabular())
