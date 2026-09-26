@@ -195,21 +195,60 @@ def assign_document_names(corpus: list[DocumentSpec]) -> list[str]:
     return [f"doc-{i:0{DOCUMENT_NAME_WIDTH}d}" for i in range(1, len(corpus) + 1)]
 
 
+ANHANG_SUFFIX = "-anhang"
+
+
+def hat_mailanhang(spec: DocumentSpec) -> bool:
+    """Trägt diese Vorlage eine Mail mit angehängter PDF?
+
+    Die Regel steht hier und nur hier. ``scripts/generate_documents.py`` entscheidet damit,
+    ob es einen Anhang schreibt, und ``manifest_frame`` damit, ob es eine Zeile dafür
+    anlegt. Zwei Stellen, die dieselbe Regel unabhängig führen, laufen irgendwann
+    auseinander – und der Fehler wäre dann unsichtbar: eine Manifestzeile ohne Datei oder
+    eine Datei ohne Wahrheit.
+    """
+    return "eml" in spec.formats and spec.template_id.endswith(ANHANG_SUFFIX)
+
+
+def anhang_namen(spec: DocumentSpec, pfad: Path) -> list[str]:
+    """Namen der Anhänge dieser Vorlage, in derselben Schreibweise wie der Generator."""
+    return [f"{pfad.stem}.pdf"] if hat_mailanhang(spec) else []
+
+
 def manifest_frame(
     corpus: list[DocumentSpec], splits: dict[str, Split], paths: list[Path], root: Path
 ) -> pl.DataFrame:
-    """Die bekannte Wahrheit als Tabelle: Pfad → Klasse, Vorlage, Split."""
-    return pl.DataFrame(
-        [
+    """Die bekannte Wahrheit als Tabelle: Pfad → Klasse, Vorlage, Split.
+
+    Mailanhänge bekommen eine eigene Zeile mit Klasse und Split der Elternmail. Sie
+    entstehen erst beim Einlesen (``pipeline.py`` macht aus jedem Anhang ein eigenes
+    Dokument), der Generator schreibt sie nie als Datei. Ohne eigene Zeile verliert jeder
+    ``join`` von ``documents`` auf das Manifest sie stillschweigend, und beim Split wären
+    Mail und Anhang – zwei Dokumente mit 0,95 Textähnlichkeit – auf beiden Seiten des
+    Gold-Schnitts möglich (Konzept § 9.2).
+    """
+    zeilen: list[dict[str, object]] = []
+    for spec, pfad in zip(corpus, paths, strict=True):
+        relativ = str(pfad.relative_to(root))
+        zeilen.append(
             {
-                "source_path": str(pfad.relative_to(root)),
+                "source_path": relativ,
                 "class_key": spec.class_key,
                 "template_id": spec.template_id,
                 "variant": spec.variant,
                 "split": str(splits[spec.template_id]),
                 "format": pfad.suffix.lstrip("."),
             }
-            for spec, pfad in zip(corpus, paths, strict=True)
-        ],
-        schema=MANIFEST_SCHEMA,
-    )
+        )
+        for anhang_name in anhang_namen(spec, pfad):
+            zeilen.append(
+                {
+                    "source_path": f"{relativ}!{anhang_name}",
+                    "class_key": spec.class_key,
+                    "template_id": spec.template_id,
+                    "variant": spec.variant,
+                    "split": str(splits[spec.template_id]),
+                    "format": Path(anhang_name).suffix.lstrip("."),
+                }
+            )
+    return pl.DataFrame(zeilen, schema=MANIFEST_SCHEMA)

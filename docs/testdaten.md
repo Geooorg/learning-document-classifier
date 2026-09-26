@@ -46,6 +46,14 @@ deckelt die Trefferquote des bestmöglichen Dateiname-Raters.
 Die `template_id`-Muster in der folgenden Tabelle (`GUTSCHRIFT-*` u. Ä.) beziehen sich auf
 die gleichnamige Manifest-Spalte, nicht mehr auf den Dateinamen.
 
+Mailanhänge tragen eine eigene Zeile im Manifest (`source_path` als `<mailpfad>!<anhangname>`,
+z. B. `eml/doc-0051.eml!doc-0051.pdf`), obwohl der Generator sie nie als eigenständige Datei
+schreibt — sie entstehen erst beim Einlesen (`pipeline.py`). Klasse und Split erbt der Anhang
+von seiner Elternmail: Mailkörper und Anhang tragen denselben Inhalt (gemessene
+Textähnlichkeit 0,95) und dürften deshalb nie auf verschiedenen Seiten des Gold-Schnitts
+stehen, sonst stünde effektiv dasselbe Dokument gleichzeitig im Training und im Gold-Set
+(Konzept § 9.2).
+
 ## Absichtlich eingebaute Schwierigkeiten
 
 | Nr. | Sachverhalt | Wo | Wozu |

@@ -4,18 +4,23 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from doccls.classes import load_classes
+from doccls.config import GENERATED_DIR, PARQUET_DIR
 from doccls.generation.content import build_corpus
 from doccls.generation.manifest import (
     Split,
     assign_splits,
     compare_with_frozen,
+    hat_mailanhang,
     load_frozen_splits,
+    manifest_frame,
     report_template_drift,
     save_splits,
 )
+from doccls.pipeline import read_table
 
 
 def test_neue_vorlage_verschiebt_bestehende_nicht() -> None:
@@ -136,3 +141,42 @@ def test_jede_klasse_kommt_in_jedem_split_vor() -> None:
     for klasse in load_classes().keys():
         vorhanden = {splits[s.template_id] for s in korpus if s.class_key == klasse}
         assert vorhanden == set(Split), f"{klasse} fehlt in {set(Split) - vorhanden}"
+
+
+def test_mailanhang_steht_mit_im_manifest() -> None:
+    """Der Anhang entsteht erst beim Einlesen, nicht beim Erzeugen – ohne eigene Zeile
+    verliert ihn jeder join von documents auf manifest stillschweigend."""
+    korpus = build_corpus()
+    splits = assign_splits(korpus)
+    next(s for s in korpus if hat_mailanhang(s))
+    pfade = [Path(f"{s.template_id}-{s.variant:02d}.{s.formats[0]}") for s in korpus]
+
+    rahmen = manifest_frame(korpus, splits, pfade, Path("."))
+
+    anhaenge = rahmen.filter(pl.col("source_path").str.contains("!"))
+    assert anhaenge.height > 0, "Kein Anhang im Manifest – die Mailvorlagen tragen keinen"
+    for zeile in anhaenge.iter_rows(named=True):
+        eltern_pfad = zeile["source_path"].split("!")[0]
+        eltern = rahmen.filter(pl.col("source_path") == eltern_pfad)
+        assert eltern.height == 1, f"Elternmail {eltern_pfad} fehlt im Manifest"
+        assert zeile["split"] == eltern["split"][0], (
+            f"{zeile['source_path']} liegt im Split {zeile['split']}, die Elternmail "
+            f"{eltern_pfad} aber in {eltern['split'][0]} – zwei Dokumente mit 0,95 "
+            "Textaehnlichkeit auf beiden Seiten des Gold-Schnitts"
+        )
+        assert zeile["class_key"] == eltern["class_key"][0]
+
+
+def test_jedes_eingelesene_dokument_hat_eine_wahrheit() -> None:
+    """Die Gegenprobe am echten Bestand: documents und manifest müssen deckungsgleich sein.
+
+    Ohne diesen Test bliebe die Luecke unbemerkt, sobald eine neue Dokumentart hinzukommt,
+    die erst beim Einlesen entsteht (etwa ein ZIP-Eintrag oder eine verschachtelte Mail).
+    """
+    dokumente = read_table(PARQUET_DIR, "documents")
+    manifest = pl.read_parquet(GENERATED_DIR / "manifest.parquet")
+    ohne_wahrheit = dokumente.join(manifest.select("source_path"), on="source_path", how="anti")
+    assert ohne_wahrheit.height == 0, (
+        f"{ohne_wahrheit.height} eingelesene Dokumente haben keine Zeile im Manifest: "
+        f"{ohne_wahrheit['source_path'].to_list()[:5]}"
+    )

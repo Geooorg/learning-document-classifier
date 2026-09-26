@@ -54,9 +54,15 @@ def pfade_fuer_vorlage(template_id: str) -> list[Path]:
 
     Der ist seit der Schließung der Dateiname-Abkürzung neutral (``doc-0001.eml``) und
     verrät weder Klasse noch Vorlage mehr; ``template_id`` steht nur noch im Manifest.
+
+    Mailanhang-Zeilen (``source_path`` enthält ``!``) werden ausgeschlossen: Sie stehen für
+    ein Dokument, das erst beim Einlesen entsteht, und zeigen auf keine eigene Datei unter
+    ``RAW_DIR`` (siehe ``manifest_frame`` in ``doccls.generation.manifest``).
     """
     manifest = pl.read_parquet(GENERATED_DIR / "manifest.parquet")
-    zeilen = manifest.filter(pl.col("template_id") == template_id).sort("source_path")
+    zeilen = manifest.filter(
+        (pl.col("template_id") == template_id) & ~pl.col("source_path").str.contains("!")
+    ).sort("source_path")
     assert not zeilen.is_empty(), f"Keine Testdaten für Vorlage {template_id!r}"
     return [RAW_DIR / pfad for pfad in zeilen["source_path"]]
 
@@ -66,7 +72,9 @@ def pfade_fuer_klasse_und_format(class_key: str, format_: str) -> list[Path]:
     für Eigenschaften, die an der Klasse hängen (z. B. dem Betreff), nicht an der Vorlage."""
     manifest = pl.read_parquet(GENERATED_DIR / "manifest.parquet")
     zeilen = manifest.filter(
-        (pl.col("class_key") == class_key) & (pl.col("format") == format_)
+        (pl.col("class_key") == class_key)
+        & (pl.col("format") == format_)
+        & ~pl.col("source_path").str.contains("!")
     ).sort("source_path")
     assert not zeilen.is_empty(), f"Keine Testdaten für {class_key}/{format_}"
     return [RAW_DIR / pfad for pfad in zeilen["source_path"]]

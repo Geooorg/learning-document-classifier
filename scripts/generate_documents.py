@@ -17,6 +17,7 @@ from doccls.generation.manifest import (
     assign_document_names,
     assign_splits,
     compare_with_frozen,
+    hat_mailanhang,
     load_frozen_splits,
     manifest_frame,
     report_template_drift,
@@ -60,7 +61,7 @@ def main() -> None:
     for spec, name in zip(korpus, namen, strict=True):
         fmt = spec.formats[0]
         basis = args.out / fmt / name
-        if fmt == "eml" and spec.template_id.endswith("-anhang"):
+        if hat_mailanhang(spec):
             anhang = write(zwischenablage / name, spec, "pdf").read_bytes()
             pfade.append(write(basis, spec, "eml", attachment=(f"{name}.pdf", anhang)))
         else:
@@ -72,7 +73,7 @@ def main() -> None:
     ziel = GENERATED_DIR / "manifest.parquet"
     manifest.write_parquet(ziel)
 
-    anhaenge = sum(1 for s in korpus if s.template_id.endswith("-anhang"))
+    anhaenge = sum(1 for s in korpus if hat_mailanhang(s))
     print(f"{len(pfade)} Dateien geschrieben nach {args.out}, davon {anhaenge} Mails mit Anhang")
     print(manifest.group_by("class_key", "split").len().sort("class_key", "split"))
     print(f"Manifest: {ziel}")
