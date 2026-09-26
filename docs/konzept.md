@@ -934,6 +934,55 @@ was die Auswertungen aus Phase 3 als Engpass ausweisen. **Nicht vorher entscheid
 4. **Mandantentrennung.** Falls nötig, wird das `project_id`-Muster aus dem Referenzprojekt
    übernommen (Pflichtargument ohne Vorgabe, Formatprüfung in jedem Modell).
 
+### Aus dem Vergleich mit einem fremden Architekturentwurf
+
+Die folgenden vier Punkte stammen aus dem Abgleich mit einem extern vorgeschlagenen
+Plattformentwurf (Postgres/pgvector, MinIO, FastAPI, LLM als Erstklassifikator). Der Entwurf
+als Ganzes ist nicht übernehmbar — er hat weder Kalibrierung noch Gold-Set noch
+Promotion-Gate und stellt ein generatives Modell in den Entscheidungspfad, was § 1 und § 8.1
+ausdrücklich ausschließen. Diese vier Aspekte sind aber Lücken auf unserer Seite.
+
+5. **Hierarchische Klassen.** `classes.yaml` ist heute flach. Unsere Verwechslungspaare sind
+   aber genau die Geschwister einer naheliegenden Hierarchie: Finanzdokument →
+   {Rechnung, Gutschrift}, Vertragsdokument → {Vertrag, AGB}, Projekt →
+   {Statusbericht, Protokoll}. Der Ertrag liegt nicht in der Genauigkeit, sondern in der
+   Entscheidung (§ 7.4): Heute gibt es nur `AUTO`, `REVIEW` und `SONSTIGES`. Mit einer
+   Oberebene gäbe es einen vierten Zustand — *grobe Klasse sicher, feine unsicher*. „Das ist
+   ein Finanzdokument, Rechnung oder Gutschrift, bitte entscheide" ist für den Prüfenden
+   deutlich billiger als „`REVIEW`, wähle aus sieben", und senkt damit die Kosten der
+   Lernschleife, die in § 8.2 der eigentliche Engpass sind.
+   Was dabei **nicht** übernommen wird: eine Taxonomie als zur Laufzeit editierbare
+   Datenbanktabelle. Eine Klassenänderung entwertet jedes Modell und jede Metrik. Die
+   Reibung einer versionierten Datei ist hier die Schutzfunktion, nicht der Mangel.
+
+6. **Eine `extraction_version` am `Document`.** Versioniert sind heute die Merkmale
+   (`feature_version`), das Modell (`model_version`) und der Label-Stand (Snapshot-Hash) —
+   nicht die Extraktion. Das hat bereits einmal zugeschlagen: Die Senkung von
+   `MIN_CHARS_PER_PAGE` von 120 auf 40 hat den Textbestand verändert, ohne dass irgendeine
+   Version das anzeigt. Zwei Auswertungen vor und nach dieser Änderung sind nicht
+   vergleichbar, und nichts im Bestand sagt das. Die Version schließt die Lücke zwischen
+   Phase 1 und Phase 2 und kostet ein Feld plus einen Hash über die Extraktionsparameter —
+   dieselbe Mechanik wie `feature_version` in § 6.4.
+
+7. **Ähnliche Dokumente als Beleg, und ein Signal-Layer.** Das `evidence`-Feld aus § 1 ist
+   bis heute nicht umgesetzt, und `coef_` gegen Merkmalsnamen ist für einen Prüfenden
+   unlesbar. Zwei billige Abhilfen, beide auf vorhandenem Material:
+   - Die k nächsten bereits gelabelten Nachbarn im Embedding-Raum anzeigen. Die Vektoren
+     liegen für die OOD-Prüfung (§ 7.4) und die Vielfaltsauswahl (§ 8.2) ohnehin vor; hier
+     werden sie nur in die Leserichtung gedreht. Ergänzt § 8.5, wo dieselben Nachbarn
+     bereits die Prüfliste steuern.
+   - Ein Satz deterministischer Detektoren (Rechnungsnummer-Muster, USt-IdNr, Zahlungsziel,
+     Paragraphenzählung) liefert dreierlei zugleich: lesbare Belege, zusätzliche
+     Strukturmerkmale und eine ehrliche Regel-Grundlinie. Dass Regeln auf diesem Gegenstand
+     stark sind, ist gemessen — eine triviale Sechs-Wort-Regel erreicht auf dem Gold-Set
+     Macro-F1 0,750.
+
+8. **Operative Daten und Trainingsdaten sind getrennte Bestände.** Bisher steht das nur
+   implizit im Label-Snapshot-Hash (§ 8.3). Als Grundsatz ausgeschrieben — operative Daten
+   in der Datenbank, Trainings- und Auswertungsbestand in Parquet, nie gegen eine bewegte
+   Tabelle trainieren — verhindert es den Fehler, für den der Snapshot nur die Nachsorge
+   ist. Wird mit Phase 4 wirksam, wenn Postgres an die Stelle von SQLite tritt (§ 11).
+
 ---
 
 # Anhänge
