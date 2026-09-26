@@ -67,6 +67,22 @@ def test_dokumentvektor_gewichtet_frueh_staerker() -> None:
     )
 
 
+def test_dokumentvektor_bindet_head_chars_unabhaengig_von_chunk_chars() -> None:
+    """Aufgabe 3 hat gezeigt: Ein Parameter, den jeder Test mit demselben Wert aufruft, ist
+    ungebunden. In den Tests oben sind chunk_chars und head_chars stets beide 10 – eine
+    vertauschte Weitergabe der beiden Werte an chunks()/head_text() bliebe unbemerkt. Hier
+    sind sie bewusst verschieden, damit genau das auffiele.
+    """
+    embedder = FakeEmbedder()
+    konfiguration = FeatureConfig(chunk_chars=100, head_chars=5)
+    text = "A" * 30
+    vektor = document_vector(embedder, text, konfiguration, praefix=e5_prefix)
+    mittelwert_laenge = len(e5_prefix(text))
+    kopf_laenge = len(e5_prefix(text[:5]))
+    assert vektor[0] == mittelwert_laenge, "Mittelwert benutzt nicht chunk_chars=100"
+    assert vektor[embedder.dimension] == kopf_laenge, "Kopfblock benutzt nicht head_chars=5"
+
+
 def test_leerer_text_ergibt_nullvektor_statt_absturz() -> None:
     embedder = FakeEmbedder()
     konfiguration = FeatureConfig(chunk_chars=10, head_chars=10)
