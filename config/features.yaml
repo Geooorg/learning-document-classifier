@@ -1,0 +1,12 @@
+# Parameter der Merkmalsbildung. Aus dem Inhalt dieser Datei wird die feature_version
+# berechnet (src/doccls/features/__init__.py). Wer hier etwas ändert, macht alle bisher
+# gerechneten Merkmalsvektoren ungültig – das ist gewollt und der Sinn der Sache.
+
+embedder: e5              # e5 | bge-m3
+chunk_chars: 1200         # Konzept § 6.1: Text in ~1200-Zeichen-Chunks
+head_chars: 1000          # eigener Block aus den ersten 1000 Zeichen
+position_decay: 4.0       # Gewicht w_i = 1 / (1 + i/position_decay)
+ngram_min: 3              # Konzept § 6.2: Zeichen-n-Gramme 3 bis 5
+ngram_max: 5
+ngram_max_features: 50000
+svd_components: 256       # danach TruncatedSVD auf 256 Dimensionen
