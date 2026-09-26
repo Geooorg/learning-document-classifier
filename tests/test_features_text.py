@@ -10,6 +10,7 @@ from doccls.features.text import (
     position_weights,
 )
 from doccls.models import Segment, SegmentKind
+from doccls.normalize import strip_boilerplate
 
 
 def segment(index: int, text: str) -> Segment:
@@ -135,19 +136,31 @@ def test_satz_der_in_vielen_dokumenten_vorkommt_bleibt_stehen() -> None:
     damit kein wiederkehrendes Layout und muss bleiben.
     """
     gemeinsam = "Zahlbar innerhalb von vierzehn Tagen ohne Abzug"
-    dokumente = [
-        [
-            segment(0, f"Rechnung Nummer {i} an die Musterfirma. {gemeinsam}"),
-            segment(1, f"Position eins mit Betrag {i}00,00 EUR und weiterem Text"),
-            segment(2, f"Position zwei mit Betrag {i}50,00 EUR und weiterem Text"),
+
+    def seiten_von(i: int) -> list[Segment]:
+        # Der gemeinsame Satz muss eine eigene, punktabgegrenzte Einheit sein – auch nach
+        # dem Zusammenfuegen der Segmente. Ohne den Punkt verschmilzt er mit dem folgenden
+        # Text zu einer je Dokument verschiedenen Einheit, und der Test unterschiede die
+        # beiden Verdrahtungen nicht mehr. Genau so war er zuerst gebaut.
+        return [
+            segment(0, f"Rechnung Nummer {i} an die Musterfirma AG. {gemeinsam}."),
+            segment(1, f"Position eins mit Betrag {i}00,00 EUR und erlaeuternder Text."),
+            segment(2, f"Position zwei mit Betrag {i}50,00 EUR und erlaeuternder Text."),
         ]
-        for i in range(10)
-    ]
-    for seiten in dokumente:
-        assert gemeinsam in document_text_ohne_layout(seiten), (
+
+    for i in range(10):
+        assert gemeinsam in document_text_ohne_layout(seiten_von(i)), (
             "Ein Satz, der je Dokument nur einmal vorkommt, wurde entfernt – "
             "strip_boilerplate laeuft ueber den Korpus statt ueber die Seiten"
         )
+
+    # Gegenprobe: Korpusweit angewandt verschwaende derselbe Satz. Ohne diese Zeile
+    # koennte der Test oben gruen bleiben, obwohl er die Verdrahtungen gar nicht trennt.
+    korpusweit = strip_boilerplate([document_text(seiten_von(i)) for i in range(10)])
+    assert all(gemeinsam not in text for text in korpusweit), (
+        "Die Gegenprobe greift nicht: Der Satz ueberlebt auch die korpusweite Anwendung. "
+        "Dann prueft der Test oben nicht, was sein Name behauptet."
+    )
 
 
 def test_dokumenttext_ohne_layout_verliert_sonst_nichts() -> None:
