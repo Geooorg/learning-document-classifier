@@ -71,8 +71,18 @@ def _unterhebliche_vorhersagen(
 
 def test_temperatur_aendert_keine_einzige_entscheidung() -> None:
     """Konzept § 7.3: Die Rangfolge bleibt gleich. Kalibrierung repariert die Zahl, nicht
-    die Entscheidung. Wer statt zu skalieren verschiebt (logits - T), bricht das – und
-    keine Metrik der Genauigkeit wuerde es zeigen, weil sie sich mitverschoebe."""
+    die Entscheidung.
+
+    Der urspruengliche Plan behauptete an dieser Stelle, ein *Verschieben* statt
+    Skalierens (``logits - T``) breche diese Zusicherung. Das ist falsch und wurde
+    nachgemessen: ``softmax(x - c) == softmax(x)`` fuer skalares ``c``, Abweichung 1e-17.
+    Ein solcher Fehler faellt nicht hier auf, sondern bei
+    ``test_kalibrierung_senkt_den_eichfehler_deutlich`` – die Wahrscheinlichkeiten
+    blieben schlicht unveraendert ueberheblich.
+
+    Zaehne hat dieser Test gegen den Vorzeichenfehler (``-werte / T``): Dann wird die
+    sicherste Klasse zur unsichersten, ohne dass irgendeine Zahl unplausibel aussaehe.
+    """
     logits, y, klassen = _ueberhebliche_vorhersagen(seed=3)
     for T in (0.5, 1.0, 2.0, 5.0):
         vorher = logits.argmax(axis=1)
