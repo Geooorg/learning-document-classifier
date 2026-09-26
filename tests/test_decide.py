@@ -638,6 +638,28 @@ def test_entropie_bleibt_endlich_bei_wahrscheinlichkeit_null() -> None:
     assert p.decision is Decision.AUTO
 
 
+def test_gleichstand_faellt_auf_die_vorderste_klasse() -> None:
+    """Bei exakt gleicher Wahrscheinlichkeit gewinnt die vordere Spalte – wie ``argmax``.
+
+    Der zweite Fall bindet ``kind="stable"`` in der Sortierung, und er braucht seine 17
+    Klassen: NumPys Vorgabeverfahren sortiert Felder unter 16 Einträgen mit einem
+    Einfügeverfahren, das ohnehin stabil ist – gemessen über alle Muster aus {0; 0,25;
+    0,5} bis Länge 11 gibt es keinen Unterschied, und mit den sechs trainierten Klassen
+    dieses Projekts käme man nie an einen. Erst darüber greift Introsort und liefert bei
+    Gleichstand die Klasse 8 statt der Klasse 1. Ohne ``stable`` hängt der Name also an
+    der Feldlänge und an der inneren Ordnung von NumPy; beides ist keine Zusage, auf die
+    sich eine Vorhersage stützen darf.
+    """
+    nah_beieinander = _entscheide([0.5, 0.5, 0.0], tau=0.4)
+    assert nah_beieinander.class_key == "RECHNUNG"
+    assert nah_beieinander.margin == pytest.approx(0.0)
+
+    viele = tuple(f"KLASSE_{i:02d}" for i in range(17))
+    gleichstand = _entscheide([0.0] + [1 / 16] * 16, classes=viele, tau=0.0)
+    assert gleichstand.class_key == "KLASSE_01"
+    assert gleichstand.confidence == pytest.approx(1 / 16)
+
+
 def test_konfidenz_und_klasse_gehoeren_zusammen() -> None:
     """Der lautlose Fehler: argmax über die Wahrscheinlichkeiten, aber der Name aus einer
     anders sortierten Liste. Dann stimmt die Zahl, und der Name stimmt nicht."""
@@ -716,6 +738,19 @@ def test_herkunft_und_bezug_stehen_in_der_vorhersage() -> None:
     assert p.model_version == "clf-2026-09-25-r07"
     assert p.feature_version == "feat-0a1b2c3d"
     assert p.ood_score == pytest.approx(0.1)
+
+
+def test_nicht_endliche_schwellen_werden_als_solche_gemeldet() -> None:
+    """``nan`` fällt zwar auch durch jeden Bereichsvergleich – aber mit der falschen
+    Begründung.
+
+    Ein ``ood_score`` von ``nan`` entsteht dort, wo eine Umgebung keine Richtung hat; die
+    Meldung soll das sagen und nicht behaupten, die Zahl liege neben einem Intervall.
+    Ohne die eigene Prüfung bliebe der Unterschied unsichtbar, weil beide Wege eine
+    Ausnahme werfen.
+    """
+    with pytest.raises(ValueError, match="endliche Zahl"):
+        _entscheide([0.9, 0.05, 0.05], ood_score=float("nan"))
 
 
 def test_proba_und_klassen_muessen_gleich_lang_sein() -> None:

@@ -128,6 +128,22 @@ def beispiel_vorhersage(**abweichungen: Any) -> Prediction:
     return Prediction(**(felder | abweichungen))
 
 
+def _fehlerorte(**abweichungen: Any) -> list[tuple[int | str, ...]]:
+    """Wo Pydantic die Vorhersage abweist – Feldname oder ``()`` für das ganze Modell.
+
+    Die Stelle gehört in die Zusicherung, nicht nur die Tatsache einer Ausnahme. Gemessen
+    in der Mutationsprobe: Ohne die Wertebereiche an ``confidence``, ``margin`` und
+    ``entropy`` wird jeder hier geprüfte Wert trotzdem abgewiesen – nur eben von einer
+    *anderen* Ungleichung im Modellvalidator, und mit einer Meldung, die auf das falsche
+    Feld zeigt (``margin > confidence`` bei einer negativen Konfidenz). Ein
+    ``pytest.raises(ValidationError)`` allein bliebe deshalb grün, wenn die Feldschranken
+    ersatzlos verschwänden.
+    """
+    with pytest.raises(ValidationError) as fehler:
+        beispiel_vorhersage(**abweichungen)
+    return [e["loc"] for e in fehler.value.errors()]
+
+
 def test_vorhersage_haelt_ihre_felder() -> None:
     """Der Normalfall darf von keinem Wächter angefasst werden."""
     vorhersage = beispiel_vorhersage()
@@ -141,11 +157,36 @@ def test_vorhersage_lehnt_konfidenz_ausserhalb_ihres_bereichs_ab(konfidenz: floa
     """Eine Konfidenz ist ``max p̂`` und liegt damit in ``(0, 1]``.
 
     Die 0 gehört dazu: Sie gäbe es nur, wenn jede Klasse die Wahrscheinlichkeit 0 hätte –
-    das ist keine Verteilung. Und ohne die obere Schranke liefe eine Summe statt eines
-    Maximums (0,95 + 0,03 + 0,02 + … > 1) unbemerkt durch.
+    das ist keine Verteilung, und ``−ln(0)`` ist keine Zahl. Und ohne die obere Schranke
+    liefe eine Summe statt eines Maximums (0,95 + 0,03 + 0,02 + … > 1) unbemerkt durch.
     """
-    with pytest.raises(ValidationError):
-        beispiel_vorhersage(confidence=konfidenz, margin=0.0, entropy=5.0)
+    assert _fehlerorte(confidence=konfidenz, margin=0.0, entropy=5.0) == [("confidence",)]
+
+
+@pytest.mark.parametrize(
+    ("konfidenz", "margin", "entropie"),
+    [
+        (0.3, -0.1, 1.5),  # unter 0 – die Schranke 2c − 1 = −0,4 fienge das nicht
+        (1.0, 1.5, 0.0),  # über 1
+    ],
+)
+def test_vorhersage_lehnt_eine_margin_ausserhalb_ihres_bereichs_ab(
+    konfidenz: float, margin: float, entropie: float
+) -> None:
+    """Eine Margin ist eine Differenz zweier Wahrscheinlichkeiten und liegt in ``[0, 1]``.
+
+    Die untere Schranke ist nicht doppelt gemoppelt: Bei kleiner Konfidenz lässt
+    ``margin >= 2c − 1`` negative Werte durch (bei 0,3 bis −0,4), und eine negative Margin
+    höbe die Prüfliste in Phase 3 aus den Angeln – sie sortiert aufsteigend danach.
+    """
+    assert _fehlerorte(confidence=konfidenz, margin=margin, entropy=entropie) == [("margin",)]
+
+
+def test_vorhersage_lehnt_eine_negative_entropie_ab() -> None:
+    """``−Σ p ln p`` ist nie negativ. Die Konfidenz 1,0 ist hier der Punkt: Nur dort ist
+    die untere Schranke ``−ln(c)`` gleich 0, und nur dort zeigt sich, ob das Feld selbst
+    eine Untergrenze hat."""
+    assert _fehlerorte(confidence=1.0, margin=1.0, entropy=-0.5) == [("entropy",)]
 
 
 def test_vorhersage_lehnt_eine_margin_ueber_der_konfidenz_ab() -> None:
@@ -240,8 +281,7 @@ def test_vorhersage_lehnt_einen_ood_wert_ausserhalb_des_kosinusbereichs_ab() -> 
     """``1 − cos`` liegt in ``[0, 2]``. Ein Wert daneben ist kein Kosinusabstand – etwa
     eine Ähnlichkeit statt eines Abstands (Vorzeichen verdreht)."""
     for abstand in (-0.01, 2.5):
-        with pytest.raises(ValidationError):
-            beispiel_vorhersage(ood_score=abstand)
+        assert _fehlerorte(ood_score=abstand) == [("ood_score",)]
 
 
 @pytest.mark.parametrize("feld", ["document_id", "class_key", "model_version", "feature_version"])
@@ -252,8 +292,7 @@ def test_vorhersage_verlangt_herkunft_und_bezug(feld: str) -> None:
     nachvollziehbar (Konzept § 1, Leitplanke 2) und zwei Auswertungen sind nicht
     vergleichbar; ohne ``document_id`` gehört sie zu keinem Dokument.
     """
-    with pytest.raises(ValidationError):
-        beispiel_vorhersage(**{feld: ""})
+    assert _fehlerorte(**{feld: ""}) == [(feld,)]
 
 
 def test_vorhersage_kennt_nur_auto_und_review() -> None:
