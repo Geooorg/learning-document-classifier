@@ -25,9 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from doccls.config import PROJECT_ROOT
 from doccls.features.structural import STRUCTURAL_NAMES, structural_features
-from doccls.features.text import document_text
+from doccls.features.text import document_text_ohne_layout
 from doccls.models import Document, Segment, SegmentKind
-from doccls.normalize import strip_boilerplate
 
 if TYPE_CHECKING:
     # Nur für die Typpruefung: ``embedding.py`` und ``ngrams.py`` importieren ihrerseits
@@ -185,8 +184,12 @@ def build_matrix(
         zeile["document_id"]: zeile for zeile in documents.iter_rows(named=True)
     }
 
-    texte = [document_text(segmente_je_dokument.get(doc_id, [])) for doc_id in document_ids]
-    texte = strip_boilerplate(texte)
+    # ``strip_boilerplate`` bekommt die Seiten EINES Dokuments, nicht die Texte vieler –
+    # siehe ``document_text_ohne_layout``. Korpusweit angewandt entfernte es Saetze, die in
+    # vielen Dokumenten vorkommen, und das kann Inhalt sein statt Layout.
+    texte = [
+        document_text_ohne_layout(segmente_je_dokument.get(doc_id, [])) for doc_id in document_ids
+    ]
 
     praefix = praefix_fuer(embedder)
     emb_bloecke = np.vstack(

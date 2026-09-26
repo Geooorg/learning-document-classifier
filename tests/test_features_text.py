@@ -2,7 +2,13 @@
 
 import math
 
-from doccls.features.text import chunks, document_text, head_text, position_weights
+from doccls.features.text import (
+    chunks,
+    document_text,
+    document_text_ohne_layout,
+    head_text,
+    position_weights,
+)
 from doccls.models import Segment, SegmentKind
 
 
@@ -102,3 +108,51 @@ def test_decay_wirkt_sich_aus() -> None:
         f"decay wirkt nicht: erstes Gewicht {steil[0]:.4f} (decay=1) gegen "
         f"{flach[0]:.4f} (decay=16)"
     )
+
+
+def test_fusszeile_auf_allen_seiten_eines_dokuments_verschwindet() -> None:
+    """Wofuer ``strip_boilerplate`` gebaut ist: eine Zeile, die auf jeder Seite DIESES
+    Dokuments steht, ist Layout und kein Inhalt."""
+    seiten = [
+        segment(i, f"Inhalt der Seite {i} steht hier ausfuehrlich. Muster GmbH HRB 44821")
+        for i in range(5)
+    ]
+    ergebnis = document_text_ohne_layout(seiten)
+    assert "HRB 44821" not in ergebnis
+    assert all(f"Inhalt der Seite {i}" in ergebnis for i in range(5))
+
+
+def test_satz_der_in_vielen_dokumenten_vorkommt_bleibt_stehen() -> None:
+    """Der Unterschied, auf den es ankommt – und der Grund, warum diese Funktion die
+    Segmente EINES Dokuments bekommt und nicht die Texte vieler.
+
+    Waere ``strip_boilerplate`` korpusweit ueber alle Dokumenttexte angewandt (so war es
+    zuerst verdrahtet), fiele ein Satz weg, der in der Mehrzahl der Dokumente je EINMAL
+    vorkommt. Das ist aber kein Layout, sondern kann genau der Inhalt sein, der eine
+    Klasse auszeichnet – etwa eine Zahlungsklausel, die in fast jeder Rechnung steht.
+
+    Hier steht der Satz in jedem Dokument genau einmal. Je Dokument betrachtet ist er
+    damit kein wiederkehrendes Layout und muss bleiben.
+    """
+    gemeinsam = "Zahlbar innerhalb von vierzehn Tagen ohne Abzug"
+    dokumente = [
+        [
+            segment(0, f"Rechnung Nummer {i} an die Musterfirma. {gemeinsam}"),
+            segment(1, f"Position eins mit Betrag {i}00,00 EUR und weiterem Text"),
+            segment(2, f"Position zwei mit Betrag {i}50,00 EUR und weiterem Text"),
+        ]
+        for i in range(10)
+    ]
+    for seiten in dokumente:
+        assert gemeinsam in document_text_ohne_layout(seiten), (
+            "Ein Satz, der je Dokument nur einmal vorkommt, wurde entfernt – "
+            "strip_boilerplate laeuft ueber den Korpus statt ueber die Seiten"
+        )
+
+
+def test_dokumenttext_ohne_layout_verliert_sonst_nichts() -> None:
+    """Bindet die Inhaltsmenge: Ohne wiederkehrende Zeile darf gar nichts verschwinden."""
+    seiten = [segment(i, f"Ganz eigener Inhalt auf Seite {i} ohne Wiederholung") for i in range(4)]
+    ergebnis = document_text_ohne_layout(seiten)
+    for i in range(4):
+        assert f"Ganz eigener Inhalt auf Seite {i}" in ergebnis

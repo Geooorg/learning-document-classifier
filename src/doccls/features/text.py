@@ -10,6 +10,7 @@ Alle Funktionen hier sind rein: Text rein, Text raus. Kein Modell, kein Dateizug
 """
 
 from doccls.models import Segment
+from doccls.normalize import strip_boilerplate
 
 
 def document_text(segments: list[Segment]) -> str:
@@ -41,3 +42,22 @@ def position_weights(count: int, decay: float) -> list[float]:
 def head_text(text: str, head_chars: int) -> str:
     """Die ersten ``head_chars`` Zeichen als eigener Merkmalsblock."""
     return text[:head_chars]
+
+
+def document_text_ohne_layout(segments: list[Segment]) -> str:
+    """Dokumenttext, aus dem wiederkehrende Kopf- und Fußzeilen entfernt sind.
+
+    ``strip_boilerplate`` bekommt die **Segmente eines Dokuments** – also seine Seiten –
+    und nicht die Texte vieler Dokumente. Das ist der Unterschied zwischen „diese Zeile
+    steht auf jeder Seite dieses Vertrags" und „dieser Satz kommt in vielen Dokumenten des
+    Bestands vor". Nur das Erste ist Layout; das Zweite kann Inhalt sein, der eine ganze
+    Klasse auszeichnet.
+
+    Die Unterscheidung ist heute nicht messbar – der Generator setzt die Fußzeile nur
+    einmal ans Dokumentende, beide Varianten entfernen null Zeichen. Sie wird messbar,
+    sobald echte, mehrseitige Dokumente dazukommen, und dann wäre die korpusweite Variante
+    ein stiller Inhaltsverlust über den ganzen Bestand.
+    """
+    geordnet = sorted(segments, key=lambda s: s.index)
+    bereinigt = strip_boilerplate([segment.text for segment in geordnet])
+    return " ".join(teil for teil in bereinigt if teil)
