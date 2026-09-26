@@ -4,8 +4,9 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
 
-from doccls.classify import MODEL_KINDS, feature_weights, train_model
+from doccls.classify import MODEL_KINDS, TrainedModel, feature_weights, train_model
 
 
 def _zwei_klare_wolken(seed: int) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.str_]]:
@@ -33,6 +34,121 @@ def _schiefe_verteilung(
     X = np.vstack([X_haeufig, X_selten]).astype(np.float32)
     y = np.array(["haeufig"] * haeufig + ["selten"] * selten)
     return X, y
+
+
+def _bloecke_mit_extremer_skala(
+    seed: int,
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.str_]]:
+    """Ein 3-dimensionaler Signalblock (klar, aber nicht trivial trennend) neben einem
+    5-dimensionalen, klassenblinden Block mit 500.000-facher Streuung – wie beim echten
+    Bestand, wo der Strukturblock die Embeddings um den Faktor 5000 überragt
+    (Moduldoc), nur deutlicher, damit der Effekt auf 80 Dokumenten zuverlässig sichtbar
+    wird. Der riesige Block trägt kein Klassensignal (identische Verteilung für beide
+    Klassen) – ein Modell, das ihn nicht klein rechnet, verliert trotzdem, weil ihm die
+    Optimierung auf dieser Skala numerisch entgleist (gemessen: saga läuft ohne
+    Skalierung in die Iterationsgrenze)."""
+    rng = np.random.default_rng(seed)
+    n = 40
+    signal_a = rng.normal(loc=-1.0, scale=1.0, size=(n, 3))
+    signal_b = rng.normal(loc=1.0, scale=1.0, size=(n, 3))
+    signal = np.vstack([signal_a, signal_b])
+    rauschen = rng.normal(loc=0.0, scale=500_000.0, size=(2 * n, 5))
+    X = np.hstack([signal, rauschen]).astype(np.float32)
+    y = np.array(["a"] * n + ["b"] * n)
+    return X, y
+
+
+def _skalierer_von(modell: TrainedModel) -> StandardScaler:
+    """Weißer-Kasten-Zugriff auf den beim Training angepassten ``StandardScaler`` – bei
+    logreg/svm steckt er als erster Schritt in der Pipeline
+    (``named_steps["skalierer"]``), beim Centroid liegt er direkt auf der Fassade. Nur
+    so lässt sich prüfen, woher seine Kennzahlen stammen; von außen ist ``TrainedModel``
+    bewusst nur über predict/predict_proba/decision_scores ansprechbar."""
+    if modell._zentren is not None:
+        assert modell._skalierer is not None
+        return modell._skalierer
+    assert modell._schaetzer is not None
+    skalierer = modell._schaetzer.named_steps["skalierer"]
+    assert isinstance(skalierer, StandardScaler)
+    return skalierer
+
+
+def test_skalierung_macht_extrem_unterschiedliche_bloecke_lernbar() -> None:
+    """Ohne Skalierung dominiert der riesig (aber klassenblinde) skalierte Block die
+    Optimierung aller drei Modellarten so stark, dass sie kaum besser als Zufall
+    abschneiden (gemessen ohne Skalierer auf demselben Datensatz: logreg 0,64, svm
+    0,64, centroid 0,63). Mit dem in ``train_model`` eingebauten Skalierer (Moduldoc)
+    muss jede der drei Modellarten die Trainingsmenge dennoch nahezu perfekt lernen –
+    die Mutationsprobe dieses Tests ist, den Skalierer aus ``train_model`` zu entfernen
+    (siehe Bericht)."""
+    X, y = _bloecke_mit_extremer_skala(seed=1)
+    for kind in MODEL_KINDS:
+        modell = train_model(X, y, kind=kind)
+        genauigkeit = accuracy_score(y, modell.predict(X))
+        assert genauigkeit >= 0.9, (
+            f"{kind}: nur {genauigkeit:.2f} Genauigkeit trotz Skalierung - "
+            "wirkt der Skalierer noch?"
+        )
+
+
+def test_skalierer_sieht_die_vorhersagedaten_nicht() -> None:
+    """Leckagefrage (Konzept § 9.2): Ein Skalierer, der bei predict()/predict_proba()/
+    decision_scores() erneut angepasst statt nur angewendet würde, hätte Mittelwert und
+    Streuung der Vorhersagedaten gesehen. Trainings- und Vorhersagedaten liegen hier auf
+    komplett verschiedenen Verteilungen (Training um 0/±1 mit einem 500.000-fach
+    gestreuten Block, Vorhersage eng gebündelt um 10.000) – nach mehreren Vorhersagen
+    muss der im Modell abgelegte Skalierer noch exakt die Trainingskennzahlen tragen,
+    nicht die der Vorhersagedaten."""
+    X_train, y_train = _bloecke_mit_extremer_skala(seed=2)
+    mittelwert_training = X_train.astype(np.float64).mean(axis=0)
+    streuung_training = X_train.astype(np.float64).std(axis=0)
+
+    rng = np.random.default_rng(99)
+    X_vorhersage = rng.normal(loc=10_000.0, scale=0.01, size=(5, X_train.shape[1])).astype(
+        np.float32
+    )
+
+    for kind in MODEL_KINDS:
+        modell = train_model(X_train, y_train, kind=kind)
+
+        skalierer_vor = _skalierer_von(modell)
+        assert np.allclose(np.asarray(skalierer_vor.mean_), mittelwert_training)
+        assert np.allclose(np.asarray(skalierer_vor.scale_), streuung_training)
+
+        modell.predict(X_vorhersage)
+        modell.predict_proba(X_vorhersage)
+        modell.decision_scores(X_vorhersage)
+
+        skalierer_danach = _skalierer_von(modell)
+        assert np.allclose(np.asarray(skalierer_danach.mean_), mittelwert_training), (
+            f"{kind}: Skalierer traegt nach der Vorhersage nicht mehr die "
+            "Trainingsstatistik - wurde er auf den Vorhersagedaten neu angepasst?"
+        )
+        assert np.allclose(np.asarray(skalierer_danach.scale_), streuung_training)
+        assert not np.allclose(
+            np.asarray(skalierer_danach.mean_),
+            X_vorhersage.astype(np.float64).mean(axis=0),
+        )
+
+
+def test_feature_weights_stimmt_trotz_pipeline() -> None:
+    """Nach dem Einbau der Skalierungs-Pipeline (Moduldoc) liegt ``coef_`` nicht mehr
+    direkt am sklearn-Schätzer, sondern hinter ``pipeline.named_steps["schaetzer"]`` –
+    ``train_model`` zieht es dort heraus und legt es auf der Fassade ab (Docstring von
+    ``feature_weights``). Dieser Test bindet, dass die Zuordnung Gewicht -> Merkmalsname
+    (Konzept § 7.1) dabei nicht kaputtgegangen ist: richtige Anzahl Gewichte je Klasse,
+    korrekt benannt, und weiterhin ein Wurf bei falscher Namenszahl – auf Daten mit
+    genau der Art von Skalenunterschied, die die Pipeline erst nötig gemacht hat."""
+    X, y = _bloecke_mit_extremer_skala(seed=3)
+    namen = [f"m{i}" for i in range(X.shape[1])]
+    for kind in ("logreg", "svm"):
+        gewichte = feature_weights(train_model(X, y, kind=kind), namen)
+        assert set(gewichte) == set(np.unique(y))
+        for je_klasse in gewichte.values():
+            assert len(je_klasse) == len(namen)
+            assert set(je_klasse) == set(namen)
+        with pytest.raises(ValueError, match="Merkmalsnamen"):
+            feature_weights(train_model(X, y, kind=kind), namen[:-1])
 
 
 def test_jedes_modell_lernt_eine_trennbare_aufgabe() -> None:

@@ -25,6 +25,24 @@ für Klassen hält, und ``predict`` verlässt sich für logreg/svm auf den *eige
 ``predict`` des Schätzers statt auf einen selbstgebauten Umweg über
 ``predict_proba`` – nur so kann ein Auseinanderlaufen der beiden Reihenfolgen
 überhaupt auffallen.
+
+**Skalierung.** Die vier Merkmalsblöcke (``emb_mean``, ``emb_head``, ``ngram``,
+``structural``) unterscheiden sich um den Faktor 5000 in ihrer Größenordnung (auf dem
+abgelegten Bestand: Standardabweichung 0,036 bei den Embeddings gegen 175 bei den 39
+Strukturmerkmalen). ``solver="saga"`` (Konzept § 7.1) ist ein Gradientenverfahren und
+konvergiert auf so unterschiedlich skalierten Merkmalen nicht – gemessen läuft es ohne
+Skalierung in die Iterationsgrenze (5000) statt zu konvergieren. Für logreg und svm
+liegt der ``StandardScaler`` deshalb *im* Modell, als erster Schritt einer
+``sklearn.pipeline.Pipeline``: Er wird beim Training nur auf den Trainingsdaten
+angepasst (``fit``) und bei jeder späteren Vorhersage nur angewendet (``transform``)
+– ein außerhalb angepasster Skalierer hätte Mittelwert und Streuung des Gold-Sets
+gesehen, das ist genau die Art von Leckage, vor der Konzept § 9.2 warnt. Auch der
+Centroid bekommt einen (separat verwalteten) ``StandardScaler``, obwohl Kosinusabstände
+gegenüber einer *gemeinsamen* Skalierung aller Merkmale unempfindlich sind: Ohne
+Skalierung dominiert allein die Norm des 39-dimensionalen Strukturblocks (Faktor 5000
+gegenüber den Embeddings) den Winkel jedes Dokumentvektors, unabhängig davon, was in den
+anderen drei Blöcken steht – das ist *blockweise* Skalierung, nicht die globale, gegen
+die Kosinusähnlichkeit robust ist.
 """
 
 from collections.abc import Sequence
@@ -32,6 +50,8 @@ from collections.abc import Sequence
 import numpy as np
 import numpy.typing as npt
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 
 MODEL_KINDS: tuple[str, ...] = ("logreg", "centroid", "svm")
@@ -46,9 +66,12 @@ def _softmax(werte: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
 
 
 def _kosinusaehnlichkeit(
-    X: npt.NDArray[np.float32], zentren: npt.NDArray[np.float64]
+    X: npt.NDArray[np.float32] | npt.NDArray[np.float64], zentren: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Kosinusähnlichkeit jeder Zeile aus ``X`` zu jeder Zeile aus ``zentren``.
+
+    ``X`` kommt beim Centroid bereits skaliert an (siehe Moduldoc) – ``float64`` statt
+    des rohen ``float32`` der Merkmalsmatrix.
 
     ``1e-12`` gegen die Nullvektor-Division, die ein Dokument ohne ein einziges von
     Null verschiedenes Merkmal sonst in ein ``NaN`` verwandeln würde.
@@ -97,8 +120,9 @@ class TrainedModel:
         classes_: list[str],
         liefert_echte_wahrscheinlichkeiten: bool,
         *,
-        schaetzer: LogisticRegression | LinearSVC | None = None,
+        schaetzer: Pipeline | None = None,
         zentren: npt.NDArray[np.float64] | None = None,
+        skalierer: StandardScaler | None = None,
         coef: npt.NDArray[np.float64] | None = None,
     ) -> None:
         self.kind = kind
@@ -107,14 +131,21 @@ class TrainedModel:
         self.coef_ = coef
         self._schaetzer = schaetzer
         self._zentren = zentren
+        self._skalierer = skalierer
 
     def decision_scores(self, X: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
         """Ein Rohwert je Klasse, in ``classes_``-Reihenfolge – höher heißt sicherer.
 
         Bei logreg/svm das (bei zwei Klassen ergänzte) ``decision_function`` von
-        sklearn; beim Centroid die Kosinusähnlichkeit zu den Klassenmittelpunkten."""
+        sklearn – die Pipeline skaliert dabei intern mit dem beim Training angepassten
+        ``StandardScaler``, hier nur noch angewendet, nie neu angepasst. Beim Centroid
+        die Kosinusähnlichkeit zu den (ebenfalls skalierten) Klassenmittelpunkten,
+        nachdem ``X`` mit demselben, beim Training angepassten Skalierer transformiert
+        wurde (Moduldoc: Skalierung)."""
         if self._zentren is not None:
-            return _kosinusaehnlichkeit(X, self._zentren)
+            assert self._skalierer is not None
+            X_skaliert = np.asarray(self._skalierer.transform(X), dtype=np.float64)
+            return _kosinusaehnlichkeit(X_skaliert, self._zentren)
         assert self._schaetzer is not None
         roh = np.asarray(self._schaetzer.decision_function(X), dtype=np.float64)
         return _binaeren_score_erweitern(roh)
@@ -172,47 +203,70 @@ def train_model(
     klassen = sorted(set(y_arr.tolist()))
 
     if kind == "logreg":
-        schaetzer_lr = LogisticRegression(
-            solver="saga",
-            class_weight="balanced",
-            max_iter=5000,
-            random_state=seed,
+        pipeline_lr = Pipeline(
+            [
+                ("skalierer", StandardScaler()),
+                (
+                    "schaetzer",
+                    LogisticRegression(
+                        solver="saga",
+                        class_weight="balanced",
+                        max_iter=5000,
+                        random_state=seed,
+                    ),
+                ),
+            ]
         )
-        schaetzer_lr.fit(X, y_arr)
-        _klassen_pruefen([str(k) for k in schaetzer_lr.classes_], klassen)
+        pipeline_lr.fit(X, y_arr)
+        _klassen_pruefen([str(k) for k in pipeline_lr.classes_], klassen)
         coef = _als_klassen_x_merkmale(
-            np.asarray(schaetzer_lr.coef_, dtype=np.float64), len(klassen)
+            np.asarray(pipeline_lr.named_steps["schaetzer"].coef_, dtype=np.float64),
+            len(klassen),
         )
         return TrainedModel(
             kind=kind,
             classes_=klassen,
             liefert_echte_wahrscheinlichkeiten=True,
-            schaetzer=schaetzer_lr,
+            schaetzer=pipeline_lr,
             coef=coef,
         )
 
     if kind == "svm":
-        schaetzer_svm = LinearSVC(class_weight="balanced", random_state=seed)
-        schaetzer_svm.fit(X, y_arr)
-        _klassen_pruefen([str(k) for k in schaetzer_svm.classes_], klassen)
+        pipeline_svm = Pipeline(
+            [
+                ("skalierer", StandardScaler()),
+                ("schaetzer", LinearSVC(class_weight="balanced", random_state=seed)),
+            ]
+        )
+        pipeline_svm.fit(X, y_arr)
+        _klassen_pruefen([str(k) for k in pipeline_svm.classes_], klassen)
         coef = _als_klassen_x_merkmale(
-            np.asarray(schaetzer_svm.coef_, dtype=np.float64), len(klassen)
+            np.asarray(pipeline_svm.named_steps["schaetzer"].coef_, dtype=np.float64),
+            len(klassen),
         )
         return TrainedModel(
             kind=kind,
             classes_=klassen,
             liefert_echte_wahrscheinlichkeiten=False,
-            schaetzer=schaetzer_svm,
+            schaetzer=pipeline_svm,
             coef=coef,
         )
 
     # centroid: Kosinusabstaende zu den Klassenmittelpunkten, keine Wahrscheinlichkeiten.
-    zentren = np.vstack([X[y_arr == klasse].mean(axis=0) for klasse in klassen]).astype(np.float64)
+    # Skalierung separat verwaltet (keine Pipeline noetig, da kein sklearn-Schaetzer
+    # beteiligt ist) - angepasst ausschliesslich auf X, das hier bereits die
+    # Trainingsmenge ist.
+    skalierer_centroid = StandardScaler()
+    X_skaliert = np.asarray(skalierer_centroid.fit_transform(X), dtype=np.float64)
+    zentren = np.vstack([X_skaliert[y_arr == klasse].mean(axis=0) for klasse in klassen]).astype(
+        np.float64
+    )
     return TrainedModel(
         kind=kind,
         classes_=klassen,
         liefert_echte_wahrscheinlichkeiten=False,
         zentren=zentren,
+        skalierer=skalierer_centroid,
     )
 
 
@@ -223,6 +277,16 @@ def feature_weights(model: TrainedModel, names: list[str]) -> dict[str, dict[str
 
     Nur für Modelle mit linearen Gewichten (logreg, svm) – der Centroid hat keine
     ``coef_``, seine Klassifikation ist eine Distanz, keine gewichtete Summe.
+
+    ``coef_`` wird in ``train_model`` aus der Pipeline gezogen (``named_steps
+    ["schaetzer"].coef_``), bevor sie auf dem Modell abgelegt wird – ``feature_weights``
+    selbst sieht die Pipeline nie und bleibt dadurch unverändert, obwohl logreg/svm
+    jetzt hinter einem ``StandardScaler`` stecken. Die Gewichte stehen dadurch in
+    skalierten Einheiten (pro Standardabweichung, nicht pro Rohwert) – bei vier Blöcken
+    mit Faktor 5000 Größenunterschied (Moduldoc) ist das die einzige Lesart, in der
+    Gewichte über Blockgrenzen hinweg überhaupt vergleichbar sind; ein Gewicht auf
+    Rohwert-Skala wäre für die 39 Strukturmerkmale systematisch winzig, egal wie stark
+    das Modell tatsächlich auf sie achtet.
 
     Wirft, wenn ``names`` nicht exakt zur Merkmalszahl passt: Eine stillschweigend
     abgeschnittene Zuordnung wäre schlimmer als gar keine.
