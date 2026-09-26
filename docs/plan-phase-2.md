@@ -2612,14 +2612,25 @@ def test_ood_abstand_ist_gross_fuer_fremdes_dokument() -> None:
     assert ood_scores(fern, trainings_vektoren).mean() > ood_scores(nah, trainings_vektoren).mean()
 
 
+# RICHTIGSTELLUNG (nach der Umsetzung, zweimal unabhaengig nachgemessen): Der hier
+# urspruenglich geplante Test verlangte std(k=1) > std(k=10) bei Proben- und
+# Trainingswolke aus derselben Verteilung. Diese Eigenschaft gilt nicht. Der Mittelwert
+# der k naechsten Punkte schrumpft zur lokalen Mitte, und wie stark er das tut, haengt von
+# der Lage des Pruefpunkts ab -- dieser Anteil schwankt staerker als das Zittern des einen
+# naechsten Nachbarn. Gemessen ueber Gauss-Wolken, je 30 Seeds, Median von
+# std(k=1)/std(k=10):
+#     dim   2  ->  0,521   (3 % der Seeds ueber 1)
+#     dim  16  ->  1,703   (100 %)
+#     dim 128  ->  0,845   (7 %)
+#     dim 768  ->  0,746   (0 %)  <- die echte Embedding-Dimension
+# In der Dimension, um die es hier geht, gilt genau das Gegenteil des Geplanten. Ein Test,
+# der mit einem passenden Seed gruen wird, ist gruen, weil der Seed gewaehlt wurde.
+# Umgesetzt ist stattdessen eine Bindung an den gerechneten Wert: ein Bestand aus
+# 1x [1,0] und 9x [0,1], geprueft wird [1,0]; k=1 -> 0, k=2 -> 1-1/sqrt(2),
+# k=10 -> 1-1/sqrt(82), alle drei von Hand nachgerechnet. Die Mutation "k ignorieren"
+# macht diesen Test rot (nachgeprueft).
 def test_ood_nutzt_wirklich_k_nachbarn() -> None:
-    """Bindet k: Mit k=1 haengt der Abstand an einem einzigen Punkt und schwankt stark,
-    mit k=10 ist er stabil. Eine Umsetzung, die k ignoriert, faellt hier auf."""
-    trainings_vektoren = _wolke(mittelpunkt=[1.0, 0.0], anzahl=50, seed=2)
-    probe = _wolke(mittelpunkt=[1.0, 0.0], anzahl=20, seed=9)
-    assert float(np.std(ood_scores(probe, trainings_vektoren, k=1))) > float(
-        np.std(ood_scores(probe, trainings_vektoren, k=10))
-    )
+    """siehe tests/test_decide.py -- die dortige Fassung ist die gueltige."""
 
 
 def test_delta_liegt_auf_dem_perzentil() -> None:
