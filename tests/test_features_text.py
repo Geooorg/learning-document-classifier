@@ -83,3 +83,22 @@ def test_kopftext_schneidet_bei_der_vorgabe() -> None:
 
 def test_kopftext_kuerzer_als_vorgabe_bleibt_ganz() -> None:
     assert head_text("kurz", head_chars=1000) == "kurz"
+
+
+def test_decay_wirkt_sich_aus() -> None:
+    """Bindet den Parameter selbst, nicht nur die Formel bei einem festen Wert.
+
+    Alle anderen Gewichtungstests rufen mit ``decay=4.0`` auf – ein fest verdrahtetes 4.0
+    in der Implementierung ueberlebt sie deshalb alle. Dann stuende in ``features.yaml``
+    ein ``position_decay``, das nichts bewirkt, waehrend die ``feature_version`` sich bei
+    seiner Aenderung sehr wohl aendert: Alle Merkmalsvektoren wuerden neu gerechnet und
+    kaemen identisch wieder heraus, ohne dass irgendetwas auffiele.
+
+    Kleines Decay heisst schneller Abfall, also mehr Gewicht auf dem ersten Chunk.
+    """
+    steil = position_weights(5, decay=1.0)
+    flach = position_weights(5, decay=16.0)
+    assert steil[0] > flach[0], (
+        f"decay wirkt nicht: erstes Gewicht {steil[0]:.4f} (decay=1) gegen "
+        f"{flach[0]:.4f} (decay=16)"
+    )
