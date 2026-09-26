@@ -11,6 +11,7 @@ Eine Zahl, die jemand hochzählen muss, wird irgendwann vergessen; ein Hash nie.
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -48,12 +49,24 @@ def load_feature_config(path: Path | None = None) -> FeatureConfig:
     return FeatureConfig(**rohdaten)
 
 
-def feature_version(config: FeatureConfig) -> str:
-    """Kurzer, stabiler Fingerabdruck der Merkmalsparameter.
+def version_of_values(values: Mapping[str, object]) -> str:
+    """Fingerabdruck einer Parameterabbildung.
 
-    ``sort_keys=True``: Die Version darf nicht davon abhängen, in welcher Reihenfolge die
-    Felder in der YAML stehen – sonst machte ein harmloses Umsortieren alle gerechneten
-    Vektoren ungültig.
+    ``sort_keys=True`` ist der eigentliche Inhalt dieser Funktion: Die Version darf nicht
+    davon abhängen, in welcher **Reihenfolge** die Parameter dastehen, sondern nur davon,
+    welche Werte sie haben. Ohne das änderte ein bloßes Umsortieren der Felddeklarationen
+    in ``FeatureConfig`` die Version – und machte damit jeden gerechneten Merkmalsvektor
+    ungültig, obwohl sich an den Merkmalen nichts geändert hat.
+
+    Getrennt von ``feature_version``, weil die Reihenfolgeunabhängigkeit sonst nicht
+    prüfbar wäre: ``model_dump()`` liefert immer die Deklarationsreihenfolge, egal wie das
+    Objekt gebaut wurde. Ein Test über ``FeatureConfig`` kann diese Eigenschaft deshalb
+    nicht zum Fehlschlagen bringen – über diese Naht schon.
     """
-    text = json.dumps(config.model_dump(), sort_keys=True, ensure_ascii=False)
+    text = json.dumps(dict(values), sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def feature_version(config: FeatureConfig) -> str:
+    """Kurzer, stabiler Fingerabdruck der Merkmalsparameter (Konzept § 6.4)."""
+    return version_of_values(config.model_dump())

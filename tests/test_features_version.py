@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from doccls.features import FeatureConfig, feature_version, load_feature_config
+from doccls.features import (
+    feature_version,
+    load_feature_config,
+    version_of_values,
+)
 
 
 def test_version_ist_stabil_ueber_laeufe() -> None:
@@ -38,13 +42,20 @@ def test_jeder_parameter_veraendert_die_version() -> None:
         )
 
 
-def test_version_haengt_nicht_an_der_reihenfolge() -> None:
-    """Zwei inhaltsgleiche Konfigurationen müssen dieselbe Version ergeben, auch wenn die
-    Felder in anderer Reihenfolge gesetzt wurden – sonst würde ein harmloses Umsortieren
-    in der YAML alle Merkmale ungültig machen."""
-    a = load_feature_config()
-    b = FeatureConfig(**dict(reversed(list(a.model_dump().items()))))
-    assert feature_version(a) == feature_version(b)
+def test_version_haengt_nicht_an_der_reihenfolge_der_werte() -> None:
+    """``sort_keys=True`` in ``version_of_values``. Ohne das aenderte ein blosses
+    Umsortieren der Felddeklarationen in ``FeatureConfig`` die Version – und machte jeden
+    gerechneten Merkmalsvektor ungueltig, obwohl sich an den Merkmalen nichts geaendert hat.
+
+    Geprueft wird ueber ``version_of_values`` und nicht ueber ``FeatureConfig``: Pydantics
+    ``model_dump()`` liefert immer die Deklarationsreihenfolge, egal in welcher Reihenfolge
+    die Kwargs uebergeben wurden. Ein Test ueber das Modell kann diese Eigenschaft deshalb
+    strukturell nicht zum Fehlschlagen bringen – er war tautologisch und wurde ersetzt.
+    """
+    werte = load_feature_config().model_dump()
+    umgedreht = dict(reversed(list(werte.items())))
+    assert list(umgedreht) != list(werte), "Die Probe dreht die Reihenfolge nicht wirklich um"
+    assert version_of_values(umgedreht) == version_of_values(werte)
 
 
 def test_unbekanntes_feld_wird_abgewiesen(tmp_path: Path) -> None:
