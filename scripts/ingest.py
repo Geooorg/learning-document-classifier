@@ -25,6 +25,8 @@ def main() -> None:
     )
     if ergebnis.failed:
         print(f"nicht lesbar ({len(ergebnis.failed)}): {', '.join(ergebnis.failed[:10])}")
+    if ergebnis.empty:
+        print(f"ohne Segmente ({len(ergebnis.empty)}): {', '.join(ergebnis.empty[:10])}")
 
     dokumente = read_table(args.out, "documents")
     print(
