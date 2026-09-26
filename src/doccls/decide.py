@@ -1,7 +1,19 @@
-"""Die beiden Schwellen τ und δ – abgelesen, nicht geraten (Konzept § 7.4).
+"""Die Entscheidung ``AUTO`` / ``REVIEW`` und die beiden Schwellen τ und δ (Konzept § 7.4).
 
 Hier entscheidet sich, ob ein Dokument automatisch durchläuft oder in die Prüfliste geht.
-Zwei Schwellen tragen diese Entscheidung, und **keine von beiden wird geschätzt**:
+:func:`decide_one` wendet die Regel an, die beiden Schwellen davor lesen sie aus den Daten
+ab. Die Regel selbst steht wörtlich im Konzept::
+
+    wenn ood_score > δ                    →  SONSTIGES, decision = REVIEW
+    sonst wenn konfidenz < τ              →  bester Vorschlag, decision = REVIEW
+    sonst                                 →  bester Vorschlag, decision = AUTO
+
+**Die Reihenfolge ist Teil der Regel.** Die OOD-Prüfung kommt zuerst, weil ein lineares
+Modell auf einem Dokument, das keiner Klasse ähnelt, trotzdem selbstbewusst sein kann: Es
+kennt nur seine sechs trainierten Klassen und verteilt die Masse auf sie. Würde die
+Konfidenz zuerst geprüft, liefe genau der Fall durch, den die OOD-Prüfung abfangen soll.
+
+Zwei Schwellen tragen die Entscheidung, und **keine von beiden wird geschätzt**:
 
 * **τ** ist das kleinste Konfidenzniveau, oberhalb dessen die Präzision ein Ziel hält
   (Startwert 98 %). Es wird aus der Risiko-Abdeckungs-Kurve auf der Kalibriermenge
@@ -41,9 +53,13 @@ dasselbe heraus.
 """
 
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
+from scipy.special import xlogy
+
+from doccls.models import RESIDUAL_CLASS_KEY, Decision, Prediction
 
 Zahlenreihe = npt.NDArray[np.float32] | npt.NDArray[np.float64]
 Zahlenfeld = npt.NDArray[np.float32] | npt.NDArray[np.float64]
@@ -391,3 +407,146 @@ def delta_for_percentile(scores: Zahlenreihe, percentile: float = 95.0) -> float
             "Punkt der Stichprobe hochgerechnet statt aus der Verteilung abgelesen."
         )
     return float(np.percentile(werte, percentile, method="linear"))
+
+
+VERTEILUNGS_TOLERANZ = 1e-6
+"""Wie weit sich ``proba`` von der Summe 1 entfernen darf.
+
+Nicht enger: Eine Softmax-Ausgabe in ``float32`` – ``Zahlenreihe`` lässt sie ausdrücklich
+zu – summiert sich nur auf etwa ``1e-7`` genau zu 1, und eine strengere Schranke wiese
+gültige Eingaben ab. Nicht weiter: Ab ``1e-6`` ginge die Prüfung an dem vorbei, wogegen
+sie steht – an Rohwerten (``decision_scores``) statt Wahrscheinlichkeiten, an einer
+Verteilung über andere Klassen als ``classes``, an einer Spalte, die beim Umsortieren
+verloren ging.
+"""
+
+
+def _im_bereich(wert: float, name: str, unten: float, oben: float, begruendung: str) -> float:
+    """Eine einzelne Zahl im erlaubten Bereich – sonst ``ValueError`` mit Begründung."""
+    if not math.isfinite(wert):
+        raise ValueError(f"{name}={wert!r} ist keine endliche Zahl.")
+    if not unten <= wert <= oben:
+        raise ValueError(f"{name}={wert!r} liegt ausserhalb von [{unten}, {oben}]. {begruendung}")
+    return float(wert)
+
+
+def _als_verteilung(proba: Zahlenreihe, klassenzahl: int) -> npt.NDArray[np.float64]:
+    """``proba`` als Wahrscheinlichkeitsverteilung über genau ``klassenzahl`` Klassen.
+
+    Geprüft wird, was hier lautlos schiefgehen kann: eine Länge, die nicht zu ``classes``
+    passt (dann trägt jede Zahl den Namen einer anderen Klasse), Werte außerhalb von
+    ``[0, 1]`` und eine Summe neben 1. Ohne die letzten beiden wären Konfidenz und
+    Entropie auf etwas gerechnet, das keine Verteilung ist – etwa auf den Rohwerten aus
+    ``classify.decision_scores``, die ebenfalls ein Feld je Klasse sind und deshalb
+    versehentlich hierher geraten können.
+    """
+    verteilung = _als_reihe(proba, "proba")
+    if verteilung.size != klassenzahl:
+        raise ValueError(
+            f"proba hat {verteilung.size} Eintraege, classes nennt {klassenzahl} Klassen. "
+            "Jede Wahrscheinlichkeit truege dann den Namen einer anderen Klasse."
+        )
+    if bool((verteilung < 0.0).any()) or bool((verteilung > 1.0).any()):
+        raise ValueError(
+            "proba enthaelt Werte ausserhalb von [0, 1] und ist damit keine "
+            "Wahrscheinlichkeitsverteilung. Rohwerte gehoeren nach "
+            "calibrate.apply_temperature, nicht hierher."
+        )
+    summe = float(verteilung.sum())
+    if abs(summe - 1.0) > VERTEILUNGS_TOLERANZ:
+        raise ValueError(
+            f"proba summiert sich zu {summe:.6f} statt zu 1 und ist damit keine "
+            "Wahrscheinlichkeitsverteilung. Konfidenz und Entropie waeren auf etwas "
+            "gerechnet, das keine ist."
+        )
+    return verteilung
+
+
+def decide_one(
+    proba: Zahlenreihe,
+    classes: Sequence[str],
+    *,
+    ood_score: float,
+    tau: float,
+    delta: float,
+    document_id: str,
+    model_version: str,
+    feature_version: str,
+) -> Prediction:
+    """Die Regel aus Konzept § 7.4 auf ein Dokument anwenden.
+
+    ``proba`` ist die **kalibrierte** Verteilung (``calibrate.apply_temperature``) in der
+    Spaltenreihenfolge von ``classes`` – das ist ``TrainedModel.classes_`` und nichts
+    anderes. Beides zusammen zu übergeben ist Absicht: Der lautloseste Fehler dieser Phase
+    wäre ein ``argmax`` über die Wahrscheinlichkeiten und ein Name aus einer anders
+    sortierten Liste; dann stimmt die Zahl, und der Name stimmt nicht.
+
+    Die Restklasse darf in ``classes`` nicht vorkommen. Sie wird nicht trainiert
+    (``classes.yaml``: ``residual: true``), hat also keine Spalte in ``predict_proba`` –
+    stünde sie dort, könnte ``SONSTIGES`` als bester Vorschlag mit ``AUTO`` herauskommen,
+    und § 7.4 sähe genau das nicht vor.
+
+    Neben der Entscheidung entstehen die drei Ableitungen aus § 7.2. Die Entropie wird mit
+    ``scipy.special.xlogy`` gebildet, das ``0 · log 0`` als 0 liefert: Eine
+    Wahrscheinlichkeit 0 ist nach der Kalibrierung selten, aber nicht unmöglich, und
+    ``p * np.log(p)`` ergäbe dort ``nan``, das sich durch jede spätere Mittelung fräße.
+
+    Geworfen wird bei allem, was die Zahlen bedeutungslos machte: ``proba`` ist keine
+    Verteilung oder passt nicht zu ``classes``, weniger als zwei Klassen (dann gibt es
+    keine zweitbeste und damit keine Margin), eine Schwelle außerhalb ihres Wertebereichs.
+    ``tau`` ist eine Konfidenz und liegt in ``[0, 1]``; ``delta`` und ``ood_score`` sind
+    Kosinusabstände und liegen in ``[0, 2]``.
+    """
+    if len(classes) < 2:
+        raise ValueError(
+            f"classes nennt {len(classes)} Klasse(n). Unter zwei Klassen gibt es keine "
+            "zweitbeste und damit keine Margin - und eine Entscheidung zwischen einer "
+            "einzigen Moeglichkeit ist keine."
+        )
+    if RESIDUAL_CLASS_KEY in classes:
+        raise ValueError(
+            f"classes enthaelt die Restklasse {RESIDUAL_CLASS_KEY!r}. Sie wird nicht "
+            "trainiert, hat keine Spalte in predict_proba und entsteht hier "
+            "ausschliesslich durch Ablehnung (Konzept 7.4)."
+        )
+    verteilung = _als_verteilung(proba, len(classes))
+    abstand = _im_bereich(
+        ood_score,
+        "ood_score",
+        0.0,
+        2.0,
+        "Ein Kosinusabstand 1 - cos liegt zwischen 0 (gleiche Richtung) und 2 (Gegenrichtung).",
+    )
+    schwelle_ood = _im_bereich(
+        delta, "delta", 0.0, 2.0, "delta ist ein Perzentil eben dieser Kosinusabstaende."
+    )
+    schwelle_konfidenz = _im_bereich(
+        tau, "tau", 0.0, 1.0, "tau ist eine Konfidenz und damit eine Wahrscheinlichkeit."
+    )
+
+    # Absteigend sortieren statt zweimal argmax: Der zweitbeste Wert wird fuer die Margin
+    # ohnehin gebraucht. "stable" haelt die Reihenfolge von classes bei Gleichstand.
+    ordnung = np.argsort(-verteilung, kind="stable")
+    bester = int(ordnung[0])
+    konfidenz = float(verteilung[bester])
+    margin = konfidenz - float(verteilung[int(ordnung[1])])
+    entropie = float(-xlogy(verteilung, verteilung).sum())
+
+    if abstand > schwelle_ood:
+        klasse, entscheidung = RESIDUAL_CLASS_KEY, Decision.REVIEW
+    elif konfidenz < schwelle_konfidenz:
+        klasse, entscheidung = classes[bester], Decision.REVIEW
+    else:
+        klasse, entscheidung = classes[bester], Decision.AUTO
+
+    return Prediction(
+        document_id=document_id,
+        class_key=klasse,
+        confidence=konfidenz,
+        margin=margin,
+        entropy=entropie,
+        ood_score=abstand,
+        decision=entscheidung,
+        model_version=model_version,
+        feature_version=feature_version,
+    )

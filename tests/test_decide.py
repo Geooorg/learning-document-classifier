@@ -35,11 +35,13 @@ import numpy.typing as npt
 import pytest
 
 from doccls.decide import (
+    decide_one,
     delta_for_percentile,
     ood_scores,
     risk_coverage,
     tau_for_precision,
 )
+from doccls.models import Decision, Prediction
 
 #: Analytisch gesuchtes τ für das Ziel 0,98 auf ``_konfidenz_mit_rauschen``:
 #: ``(t + 1) / 2 = 0,98`` ⇒ ``t = 0,96``.
@@ -530,3 +532,250 @@ def test_delta_lehnt_unmoegliche_perzentile_ab() -> None:
     for perzentil in (0.0, 100.0, -1.0, 101.0):
         with pytest.raises(ValueError, match="Perzentil"):
             delta_for_percentile(werte, percentile=perzentil)
+
+
+# ------------------------------------------------------------------- Entscheidung
+
+KLASSEN: tuple[str, ...] = ("RECHNUNG", "GUTSCHRIFT", "VERTRAG")
+"""Drei trainierte Klassen in der Spaltenreihenfolge von ``TrainedModel.classes_``. Die
+Restklasse ``SONSTIGES`` steht bewusst **nicht** darin: Sie wird nicht trainiert und hat
+keine Spalte in ``predict_proba``."""
+
+
+def _entscheide(
+    proba: Sequence[float] | npt.NDArray[np.float64],
+    *,
+    classes: Sequence[str] = KLASSEN,
+    ood_score: float = 0.0,
+    tau: float = 0.9,
+    delta: float = 0.5,
+) -> Prediction:
+    """``decide_one`` mit Herkunftsangaben, die kein Test hier variiert."""
+    return decide_one(
+        np.asarray(proba, dtype=np.float64),
+        classes,
+        ood_score=ood_score,
+        tau=tau,
+        delta=delta,
+        document_id="a3f1",
+        model_version="clf-test",
+        feature_version="feat-test",
+    )
+
+
+def test_hohe_konfidenz_und_bekanntes_dokument_ergibt_auto() -> None:
+    p = _entscheide([0.95, 0.03, 0.02], ood_score=0.1, tau=0.9, delta=0.5)
+    assert p.decision is Decision.AUTO and p.class_key == "RECHNUNG"
+
+
+def test_niedrige_konfidenz_ergibt_review() -> None:
+    p = _entscheide([0.5, 0.3, 0.2], ood_score=0.1, tau=0.9, delta=0.5)
+    assert p.decision is Decision.REVIEW and p.class_key == "RECHNUNG"
+
+
+def test_ood_schlaegt_hohe_konfidenz() -> None:
+    """Der eigentliche Zweck der OOD-Prüfung: Ein Dokument jenseits von delta wird
+    SONSTIGES – auch bei 0,99 Konfidenz. Das lineare Modell kennt nur seine trainierten
+    Klassen und verteilt die Masse auf sie."""
+    p = _entscheide([0.99, 0.005, 0.005], ood_score=0.9, tau=0.9, delta=0.5)
+    assert p.class_key == "SONSTIGES" and p.decision is Decision.REVIEW
+
+
+def test_ood_gewinnt_wenn_beide_pruefungen_greifen() -> None:
+    """Die **Reihenfolge** der beiden Prüfungen, und nur dieser Test bindet sie.
+
+    Der Test darüber tut es nicht: Bei Konfidenz 0,99 und tau 0,9 greift die
+    Konfidenzprüfung gar nicht, und eine Umsetzung, die sie zuerst stellt, käme über
+    denselben Umweg zum selben Ergebnis. Erst wenn **beide** Prüfungen greifen, trennen
+    sich die Ergebnisse: 0,5 liegt unter tau 0,9 *und* 0,9 über delta 0,5. Die Regel aus
+    § 7.4 verlangt hier ``SONSTIGES``; wer die Konfidenz zuerst prüft, liefert
+    ``RECHNUNG`` – beide Male mit ``REVIEW``, weshalb die Entscheidung allein nichts
+    verrät.
+    """
+    p = _entscheide([0.5, 0.3, 0.2], ood_score=0.9, tau=0.9, delta=0.5)
+    assert p.class_key == "SONSTIGES" and p.decision is Decision.REVIEW
+
+
+def test_margin_trennt_zwei_kandidaten_von_breiter_unsicherheit() -> None:
+    """Konzept § 7.2: 0,45/0,44/0,11 sitzt auf der Grenze zwischen zwei Klassen und ist
+    beim Labeln wertvoller als eine breite Unsicherheit. Konfidenz allein sieht das nicht –
+    genau deshalb wird die Margin mitgeschrieben."""
+    eng = _entscheide([0.45, 0.44, 0.11])
+    breit = _entscheide([0.40, 0.30, 0.30])
+    assert eng.margin < breit.margin
+    assert eng.entropy < breit.entropy
+
+
+def test_margin_ist_der_abstand_zur_zweitbesten_klasse() -> None:
+    """Bindet die Formel an den Wert, nicht nur an ihre Richtung.
+
+    Bei 0,5/0,3/0,2 sind alle drei naheliegenden Verwechslungen unterscheidbar: die beste
+    Wahrscheinlichkeit (0,5), die zweitbeste (0,3), der Abstand zur *drittbesten* (0,3) –
+    und der richtige Abstand zur zweitbesten (0,2).
+    """
+    p = _entscheide([0.5, 0.3, 0.2])
+    assert p.confidence == pytest.approx(0.5)
+    assert p.margin == pytest.approx(0.2)
+
+
+def test_entropie_trifft_die_formel() -> None:
+    """Bindet die Formel, nicht nur ihre Richtung: Bei drei gleich wahrscheinlichen
+    Klassen ist die Entropie ln(3). Mit ``log10`` stünden dort 0,477."""
+    p = _entscheide([1 / 3, 1 / 3, 1 / 3])
+    assert abs(p.entropy - math.log(3)) < 1e-6
+
+
+def test_entropie_bleibt_endlich_bei_wahrscheinlichkeit_null() -> None:
+    """``0 · log 0`` ist 0, nicht ``nan``.
+
+    Nach der Kalibrierung ist eine glatte Null selten, aber nicht unmöglich. Ein naives
+    ``p * np.log(p)`` ergäbe hier ``nan``, und das fräße sich durch jede spätere Mittelung
+    – eine mittlere Entropie über alle Dokumente wäre dann ``nan``, ohne dass eine einzige
+    Vorhersage erkennbar falsch wäre.
+    """
+    p = _entscheide([1.0, 0.0, 0.0], tau=0.5)
+    assert p.entropy == pytest.approx(0.0)
+    assert p.decision is Decision.AUTO
+
+
+def test_konfidenz_und_klasse_gehoeren_zusammen() -> None:
+    """Der lautlose Fehler: argmax über die Wahrscheinlichkeiten, aber der Name aus einer
+    anders sortierten Liste. Dann stimmt die Zahl, und der Name stimmt nicht."""
+    for i, klasse in enumerate(KLASSEN):
+        proba = np.full(len(KLASSEN), 0.01, dtype=np.float64)
+        proba[i] = 1.0 - 0.01 * (len(KLASSEN) - 1)
+        p = _entscheide(proba, ood_score=0.0, tau=0.5, delta=0.9)
+        assert p.class_key == klasse and p.confidence == pytest.approx(proba[i])
+
+
+def test_genau_auf_der_schwelle_gilt_als_auto() -> None:
+    """Konzept § 7.4 schreibt „konfidenz < tau → REVIEW". Gleichheit ist also AUTO.
+
+    Ohne diesen Test bliebe ein ``<=`` statt ``<`` unbemerkt, und Coverage@P98 wäre leicht
+    verschoben – bei einer Kennzahl, die auf zwei Stellen berichtet wird.
+    """
+    p = _entscheide([0.9, 0.05, 0.05], ood_score=0.0, tau=0.9, delta=0.9)
+    assert p.decision is Decision.AUTO
+
+
+@pytest.mark.parametrize(
+    ("tau", "erwartet"),
+    [(0.9, Decision.REVIEW), (0.8, Decision.AUTO), (0.7, Decision.AUTO)],
+)
+def test_die_konfidenzschwelle_wirkt_bei_einem_zweiten_tau(tau: float, erwartet: Decision) -> None:
+    """tau ist ein Parameter – eine Umsetzung, die ihn ignoriert und fest 0,9 vergleicht,
+    bestünde jeden Test mit nur einem tau.
+
+    Dieselbe Konfidenz 0,8 fällt bei tau 0,9 in die Prüfliste, ist bei 0,7 automatisch und
+    bei tau 0,8 – der Gleichheit – ebenfalls automatisch. Damit ist auch das ``<`` an
+    einem zweiten Wert gebunden, nicht nur am 0,9 des Tests darüber.
+    """
+    assert _entscheide([0.8, 0.1, 0.1], ood_score=0.0, tau=tau, delta=0.9).decision is erwartet
+
+
+@pytest.mark.parametrize(
+    ("ood_score", "delta", "ist_sonstiges"),
+    [
+        (0.5, 0.4, True),
+        (0.5, 0.5, False),
+        (0.5, 0.6, False),
+        (1.2, 1.1, True),
+        (1.2, 1.2, False),
+    ],
+)
+def test_die_ood_schwelle_wirkt_bei_einem_zweiten_delta(
+    ood_score: float, delta: float, ist_sonstiges: bool
+) -> None:
+    """delta ist ebenso ein Parameter, und die Regel sagt ``ood_score > δ`` – Gleichheit
+    ist also **kein** SONSTIGES.
+
+    Zwei Abstände (0,5 und 1,2) mit je einem delta darunter und einem gleichauf: Ein fest
+    verglichenes 0,5 fiele beim zweiten Paar auf, ein ``>=`` statt ``>`` bei beiden
+    Gleichheitsfällen. Der Wertebereich bis 2 ist kein Zierrat – ``1 − cos`` reicht so
+    weit.
+    """
+    p = _entscheide([0.95, 0.03, 0.02], ood_score=ood_score, delta=delta)
+    assert (p.class_key == "SONSTIGES") is ist_sonstiges
+    assert p.class_key == ("SONSTIGES" if ist_sonstiges else "RECHNUNG")
+
+
+def test_herkunft_und_bezug_stehen_in_der_vorhersage() -> None:
+    """Modell- und Merkmalsversion dürfen nicht vertauscht durchgereicht werden – sonst
+    ordnet jede spätere Auswertung die Vorhersage dem falschen Lauf zu (Konzept § 1)."""
+    p = decide_one(
+        np.array([0.95, 0.03, 0.02]),
+        KLASSEN,
+        ood_score=0.1,
+        tau=0.9,
+        delta=0.5,
+        document_id="a3f1",
+        model_version="clf-2026-09-25-r07",
+        feature_version="feat-0a1b2c3d",
+    )
+    assert p.document_id == "a3f1"
+    assert p.model_version == "clf-2026-09-25-r07"
+    assert p.feature_version == "feat-0a1b2c3d"
+    assert p.ood_score == pytest.approx(0.1)
+
+
+def test_proba_und_klassen_muessen_gleich_lang_sein() -> None:
+    """Ohne diese Prüfung trüge jede Wahrscheinlichkeit den Namen einer anderen Klasse –
+    und bei einer Spalte zu wenig bliebe der Fehler bis in die Auswertung unsichtbar."""
+    with pytest.raises(ValueError, match="classes nennt"):
+        _entscheide([0.5, 0.5])
+
+
+@pytest.mark.parametrize(
+    "proba",
+    [
+        [0.5, 0.3, 0.1],  # summiert sich zu 0,9
+        [0.5, 0.3, 0.3],  # summiert sich zu 1,1
+        [1.5, -0.3, -0.2],  # Summe 1, aber keine Wahrscheinlichkeiten
+    ],
+)
+def test_proba_muss_eine_verteilung_sein(proba: list[float]) -> None:
+    """Konfidenz und Entropie auf etwas zu rechnen, das keine Verteilung ist, ergibt
+    Zahlen, die aussehen wie Wahrscheinlichkeiten und keine sind.
+
+    Der Fall ist nicht theoretisch: ``classify.decision_scores`` liefert ebenfalls ein
+    Feld je Klasse in derselben Reihenfolge und passt an dieselbe Stelle.
+    """
+    with pytest.raises(ValueError, match="Wahrscheinlichkeitsverteilung"):
+        _entscheide(proba)
+
+
+def test_weniger_als_zwei_klassen_werden_abgelehnt() -> None:
+    """Ohne zweitbeste Klasse gibt es keine Margin – und eine Wahl zwischen einer
+    einzigen Möglichkeit ist keine."""
+    with pytest.raises(ValueError, match="zweitbeste"):
+        _entscheide([1.0], classes=("RECHNUNG",))
+
+
+def test_restklasse_darf_nicht_unter_den_trainierten_klassen_stehen() -> None:
+    """Stünde ``SONSTIGES`` in ``classes``, könnte sie als bester Vorschlag mit ``AUTO``
+    herauskommen. § 7.4 sieht das nicht vor: Die Restklasse entsteht ausschließlich durch
+    Ablehnung und geht immer in die Prüfliste."""
+    with pytest.raises(ValueError, match="Restklasse"):
+        _entscheide([0.9, 0.05, 0.05], classes=("RECHNUNG", "GUTSCHRIFT", "SONSTIGES"))
+
+
+@pytest.mark.parametrize(
+    ("tau", "delta", "ood_score", "name"),
+    [
+        (-0.1, 0.5, 0.0, "tau"),
+        (1.5, 0.5, 0.0, "tau"),
+        (0.9, -0.1, 0.0, "delta"),
+        (0.9, 2.5, 0.0, "delta"),
+        (0.9, 0.5, -0.1, "ood_score"),
+        (0.9, 0.5, 2.5, "ood_score"),
+    ],
+)
+def test_schwellen_ausserhalb_ihres_wertebereichs_werden_abgelehnt(
+    tau: float, delta: float, ood_score: float, name: str
+) -> None:
+    """Ein tau über 1 schickte jedes Dokument in die Prüfliste, ein delta über 2 könnte
+    per Bauart nie greifen – beides sähe nach einer strengen Einstellung aus und wäre
+    keine. tau ist eine Konfidenz (``[0, 1]``), delta und ood_score sind Kosinusabstände
+    (``[0, 2]``)."""
+    with pytest.raises(ValueError, match=name):
+        _entscheide([0.9, 0.05, 0.05], tau=tau, delta=delta, ood_score=ood_score)

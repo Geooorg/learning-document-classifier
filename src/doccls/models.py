@@ -1,6 +1,6 @@
 """Datenmodelle und die zugehörigen Polars-Schemas.
 
-Zwei Ebenen:
+Drei Ebenen:
 
 * ``Document`` – eine Version einer Datei. Die Identität umfasst Pfad **und** Inhalts-Hash:
   Dieselbe Datei an zwei Stellen sind zwei Dokumente, sonst würde die zweite übersprungen
@@ -9,12 +9,15 @@ Zwei Ebenen:
 * ``Segment``  – eine Einheit im Dokument: PDF-Seite, Abschnitt, Tabellenblatt, Mailteil.
   Ergebnis der Extraktion. Wird gespeichert, damit Merkmale neu gebildet werden können,
   ohne die Originale erneut zu lesen.
+* ``Prediction`` – das Ergebnis der Klassifikation für ein Dokument, samt den Zahlen, aus
+  denen die Entscheidung entstanden ist, und der Herkunft (Modell- und Merkmalsversion).
 
 IDs sind aus dem Inhalt abgeleitet und damit stabil: Ein erneuter Lauf erzeugt dieselben
 IDs und überschreibt, statt zu verdoppeln.
 """
 
 import hashlib
+import math
 import re
 import unicodedata
 from datetime import datetime
@@ -22,7 +25,7 @@ from enum import StrEnum
 from typing import Self
 
 import polars as pl
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 ID_LENGTH = 32
 """Hex-Zeichen abgeleiteter IDs. 32 Zeichen = 128 Bit, für Kollisionen ausreichend."""
@@ -161,6 +164,132 @@ class Segment(BaseModel):
             heading=heading,
             text=text,
         )
+
+
+class Decision(StrEnum):
+    """Was mit einer Vorhersage geschieht (Konzept § 7.4).
+
+    Zwei Werte, nicht drei: ``SONSTIGES`` ist eine **Klasse**, keine Entscheidung. Ein
+    Dokument jenseits von δ bekommt ``class_key = SONSTIGES`` *und* ``REVIEW`` – die
+    Restklasse wird nicht trainiert (``classes.yaml``: ``residual: true``), sie entsteht
+    ausschließlich durch Ablehnung und ist damit nie ein automatisch entschiedener Fall.
+    """
+
+    AUTO = "AUTO"
+    REVIEW = "REVIEW"
+
+
+RESIDUAL_CLASS_KEY = "SONSTIGES"
+"""Schlüssel der Restklasse aus ``config/classes.yaml`` (``residual: true``).
+
+Als Konstante hier, weil ``decide.decide_one`` sie vergibt, ohne das Klassenschema zu
+laden: Die Funktion bekommt nur die trainierten Klassen, und die Restklasse ist per
+Definition nicht darunter. Dass Konstante und Konfiguration nicht auseinanderlaufen,
+bindet ``test_restklasse_stimmt_mit_dem_klassenschema_ueberein`` – zwei Stellen mit
+derselben Zeichenkette sind sonst genau die Falle, die beim übernächsten Umbau zuschlägt.
+"""
+
+TOLERANZ = 1e-6
+"""Spielraum für die Ungleichungen in :class:`Prediction`.
+
+Nicht enger, weil eine Verteilung aus ``float32``-Wahrscheinlichkeiten (``Zahlenreihe``
+lässt beides zu) sich nur auf etwa ``1e-7`` genau zu 1 summiert; die daraus abgeleiteten
+Schranken erben diesen Fehler. Nicht weiter, weil die Prüfungen sonst nichts mehr fangen:
+Die kleinste hier abgewiesene Verletzung (Konfidenz 0,95 mit Margin 0,01) liegt um 0,89
+daneben.
+"""
+
+
+class Prediction(BaseModel):
+    """Die Vorhersage für ein Dokument – Klasse, die drei Zahlen dahinter, Entscheidung,
+    Herkunft (Konzept § 1, § 7.2, § 7.4).
+
+    Die drei Zahlen messen Verschiedenes und stehen deshalb alle drei da: ``confidence``
+    (``max p̂``) trägt die Schwelle, ``margin`` (``p̂₍₁₎ − p̂₍₂₎``) unterscheidet „unsicher
+    zwischen zweien" von „unsicher zwischen allen" und steuert ab Phase 3 die Prüfliste,
+    ``entropy`` (``−Σ p̂ log p̂``) erkennt breite Unsicherheit.
+
+    **Warum das Modell rechnet, statt nur Felder zu halten.** Die vier Zahlen stammen aus
+    *einer* Verteilung und können einander widersprechen. Ein Widerspruch ist hier kein
+    Schönheitsfehler: Er bedeutet, dass Zahl und Klasse aus verschiedenen Quellen stammen –
+    der lautloseste Fehler dieser Phase. Geprüft wird alles, was ohne Kenntnis der
+    Klassenzahl entscheidbar ist:
+
+    * ``0 < confidence <= 1``. Eine 0 gäbe es nur, wenn alle Klassen die
+      Wahrscheinlichkeit 0 hätten; das ist keine Verteilung.
+    * ``margin <= confidence``, denn ``p̂₍₁₎ − p̂₍₂₎ <= p̂₍₁₎``. Gleichheit heißt: die
+      zweitbeste Klasse hat 0.
+    * ``margin >= 2 · confidence − 1``, denn ``p̂₍₁₎ + p̂₍₂₎ <= 1``. Das ist die Schranke,
+      die „Konfidenz 0,95 bei Margin 0,01" abweist: Dahinter stünden zwei Klassen mit
+      zusammen 1,89.
+    * ``entropy >= −ln(confidence)``, denn jedes ``p̂ᵢ <= max p̂``. Diese Ungleichung
+      ersetzt die Prüfung gegen die Klassenzahl, die das Modell nicht kennt: Eine Entropie
+      in ``log₁₀`` statt ``ln`` fällt bei drei gleich wahrscheinlichen Klassen sofort auf
+      (0,477 statt 1,099), und eine Entropie 0 neben einer Konfidenz von 0,5 ebenso.
+
+    Eine **obere** Entropieschranke gibt es hier bewusst nicht: Sie wäre ``ln n`` und
+    hinge an der Klassenzahl, die kein Feld trägt. Sie zu erzwingen hieße, ein Feld
+    ``n_classes`` aufzunehmen, das keine Auswertung braucht. ``decide_one`` kennt ``n``
+    und hält sie durch Konstruktion ein.
+    """
+
+    model_config = {"frozen": True, "protected_namespaces": ()}
+    """``protected_namespaces`` leer: Pydantic hält sich das Präfix ``model_`` für eigene
+    Attribute frei und warnt sonst bei ``model_version``. Das Feld heißt im Konzept (§ 1,
+    § 10) so, und ein anderer Name ginge in jede gespeicherte Zeile."""
+
+    document_id: str = Field(min_length=1)
+    class_key: str = Field(min_length=1)
+    confidence: float = Field(gt=0.0, le=1.0)
+    """``max_c p̂(c|x)`` – die berichtete Zahl, Grundlage der Schwelle τ."""
+
+    margin: float = Field(ge=0.0, le=1.0)
+    """``p̂₍₁₎ − p̂₍₂₎`` – das Auswahlkriterium der Prüfliste (Konzept § 7.2)."""
+
+    entropy: float = Field(ge=0.0)
+    """``−Σ p̂ log p̂``, natürlicher Logarithmus."""
+
+    ood_score: float = Field(ge=0.0, le=2.0)
+    """Kosinusabstand zum Mittel der k nächsten Trainingsnachbarn. Der Wertebereich
+    ``[0, 2]`` ist der von ``1 − cos``: 0 gleiche Richtung, 1 rechter Winkel, 2
+    Gegenrichtung."""
+
+    decision: Decision
+    model_version: str = Field(min_length=1)
+    """Herkunft: ohne Modell- und Merkmalsversion ist eine Vorhersage nicht
+    nachvollziehbar (Konzept § 1, Leitplanke 2) und zwei Auswertungen sind nicht
+    vergleichbar."""
+
+    feature_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _pruefe_unmoegliche_kombinationen(self) -> Self:
+        """Die drei Ungleichungen aus dem Klassendoc – jede benennt, was sie ausschließt."""
+        if self.margin > self.confidence:
+            raise ValueError(
+                f"Margin {self.margin} ist groesser als die Konfidenz {self.confidence}. "
+                "Die Margin ist der Abstand der besten zur zweitbesten Klasse und kann "
+                "die beste nicht uebersteigen - hier stammen die beiden Zahlen aus "
+                "verschiedenen Verteilungen."
+            )
+        kleinste_margin = 2.0 * self.confidence - 1.0
+        if self.margin < kleinste_margin - TOLERANZ:
+            raise ValueError(
+                f"Margin {self.margin} ist zu klein fuer die Konfidenz {self.confidence}: "
+                f"Die zweitbeste Klasse haette dann {self.confidence - self.margin}, und "
+                f"beide zusammen mehr als 1. Moeglich sind erst "
+                f"{kleinste_margin} und mehr."
+            )
+        kleinste_entropie = -math.log(self.confidence)
+        if self.entropy < kleinste_entropie - TOLERANZ:
+            raise ValueError(
+                f"Entropie {self.entropy} ist zu klein fuer die Konfidenz "
+                f"{self.confidence}. Weil keine Klasse wahrscheinlicher ist als die "
+                f"beste, gilt immer -Summe p ln p >= -ln(max p) = {kleinste_entropie}. "
+                "Ein kleinerer Wert kommt aus einer anderen Verteilung oder aus einem "
+                "anderen Logarithmus."
+            )
+        return self
 
 
 SCHEMAS: dict[str, dict[str, pl.DataType]] = {
