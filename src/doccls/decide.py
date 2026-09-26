@@ -268,6 +268,20 @@ def ood_scores(X: Zahlenfeld, X_train: Zahlenfeld, k: int = 10) -> npt.NDArray[n
     ``k`` größer als der Trainingsbestand wird **abgelehnt, nicht gekürzt**: Stillschweigend
     weniger Nachbarn zu mitteln hieße, ein anderes Maß zu rechnen als das angefragte – und
     δ wäre dann auf einer anderen Größe abgelesen als die späteren Abstände.
+
+    **Bei gleicher Ähnlichkeit entscheidet die Reihenfolge von** ``np.argpartition``, und
+    das ist am Ergebnis ablesbar: ``ood_scores([[1, 1]], [[1, 0], [1, 0], [0, 1], [0, 1]],
+    k=2)`` liefert 0,29289 – gewählt werden die beiden gleichgerichteten ``[1, 0]``, deren
+    Mittel wieder ``[1, 0]`` ist. Bei „je einer" aus beiden Paaren wäre das Mittel
+    ``[0,5, 0,5]`` und der Abstand 0,0. Alle vier Nachbarn haben hier denselben Kosinus
+    zur Probe; welche zwei genommen werden, sagt das Maß nicht.
+
+    Bewusst nicht per Test gebunden: Auf den float64-Embeddings, für die diese Funktion
+    gebaut ist, sind exakte Gleichstände praktisch ausgeschlossen, und eine Zusicherung auf
+    0,29289 bände die innere Ordnung von ``np.argpartition`` – eine Eigenschaft von NumPy,
+    die keine Zusage ist und sich mit einer Version ändern darf. Wer künstliche Achsen- oder
+    Wiederholungsvektoren hineingibt, muss damit rechnen, dass die Zahl von der Auswahl
+    unter Gleichen abhängt.
     """
     probe = _l2_normiert(X, "X")
     bestand = _l2_normiert(X_train, "X_train")
@@ -304,12 +318,33 @@ def _mindestzahl_fuer_perzentil(percentile: float) -> int:
     Perzentils liegt: ``n * (1 − percentile / 100) >= 1``. Für das 95. Perzentil sind das
     20 Werte. Darunter sitzt δ auf dem obersten Punkt der Stichprobe, und der ist eine
     Eigenschaft ihrer Größe, nicht der Verteilung.
+
+    **Gerechnet wird in Prozentpunkten, nicht mit dem Anteil** – das ist kein Zierrat,
+    sondern die Behebung eines gemessenen Fehlers. Die lesbarere Form
+    ``1 − percentile / 100`` ist verlustbehaftet: Für 90 ergibt sie 0,09999999999999998
+    statt 0,1, und ``10 * 0,09999999999999998`` bleibt unter 1. Weil beide
+    Korrekturschleifen mit demselben verlorenen Wert rechnen, können sie den Fehler nicht
+    einfangen – die Funktion war dadurch für 80 (6 statt 5) und 90 (11 statt 10) um eins zu
+    streng. ``100 − percentile`` bleibt dagegen exakt, wo ``percentile`` ganzzahlig ist,
+    und die Schleifen sehen denselben Faktor wie der erste Schätzer. Gegen exakte
+    Bruchrechnung (``fractions.Fraction``) geprüft über alle ganzen und halben Perzentile
+    von 1 bis 99 sowie 99,9 / 99,99 / 99,999: kein Unterschied.
+
+    Bei einem Perzentil, das selbst nicht darstellbar ist, bleibt die Zahl an der
+    Gleitkommadarstellung hängen – 99,9 ist als ``float`` etwas *größer* als 99,9, deshalb
+    kommt 1001 heraus und nicht 1000. Das ist die richtige Antwort auf die übergebene Zahl
+    und kein Rundungsfehler mehr; der Zwilling :func:`_mindestbelegung` liefert an der
+    entsprechenden Stelle (0,999) die runde 1000, weil er exakte Ganzzahlverhältnisse
+    ``(n − 1) / n`` vergleicht statt ein aus einer Differenz gebildetes Produkt. Ein Wert
+    Unterschied bei tausend trägt keine Aussage, deshalb bleibt es bei der einfacheren
+    Form; wer exakt dezimal rechnen will, müsste hier ``decimal`` oder ``fractions``
+    hineinziehen.
     """
-    anteil_oberhalb = 1.0 - percentile / 100.0
-    anzahl = int(math.ceil(1.0 / anteil_oberhalb))
-    while anzahl > 1 and (anzahl - 1) * anteil_oberhalb >= 1.0:
+    prozentpunkte_oberhalb = 100.0 - percentile
+    anzahl = int(math.ceil(100.0 / prozentpunkte_oberhalb))
+    while anzahl > 1 and (anzahl - 1) * prozentpunkte_oberhalb >= 100.0:
         anzahl -= 1
-    while anzahl * anteil_oberhalb < 1.0:
+    while anzahl * prozentpunkte_oberhalb < 100.0:
         anzahl += 1
     return anzahl
 
@@ -326,6 +361,20 @@ def delta_for_percentile(scores: Zahlenreihe, percentile: float = 95.0) -> float
 
     0 und 100 sind Minimum und Maximum und keine Perzentile: Ein δ auf dem größten je
     gesehenen Wert lehnt per Bauart nichts ab, eines auf dem kleinsten alles.
+
+    **Zwischen zwei Beobachtungen wird linear interpoliert** (``method="linear"``,
+    ausdrücklich gesetzt statt der Voreinstellung überlassen). „Ablesen" heißt damit nicht
+    immer „einen gemessenen Wert nehmen": Der gesuchte Rang ist ``(n − 1) * p / 100`` und
+    trifft im Allgemeinen zwischen zwei sortierte Werte. Gerade an der Mindestzahl ist das
+    sichtbar – bei genau 20 Werten und dem 95. Perzentil liegt der Rang bei 18,05, δ also
+    5 Prozent des Wegs vom zweitobersten zum obersten Wert. Auf ``linspace(0, 1, 20)``
+    ergibt das 0,95, während ``lower`` 0,947368 und ``higher`` 1,0 lieferte.
+
+    Die Wahl ist bewusst: ``higher`` sprünge auf den größten beobachteten Wert und
+    verlöre genau die Eigenschaft, um derentwillen die Mindestzahl existiert; ``lower``
+    ließe δ auf einer Beobachtung sitzen und machte die Schwelle unstetig in der
+    Stichprobengröße. Gebunden ist die Wahl in
+    ``test_delta_interpoliert_linear_zwischen_den_nachbarwerten``.
     """
     if not 0.0 < percentile < 100.0:
         raise ValueError(
@@ -341,4 +390,4 @@ def delta_for_percentile(scores: Zahlenreihe, percentile: float = 95.0) -> float
             "beobachteter Wert oberhalb des Perzentils, und delta waere aus dem obersten "
             "Punkt der Stichprobe hochgerechnet statt aus der Verteilung abgelesen."
         )
-    return float(np.percentile(werte, percentile))
+    return float(np.percentile(werte, percentile, method="linear"))

@@ -222,6 +222,45 @@ def test_mindestbelegung_laesst_genau_fuenfzig_dokumente_durch() -> None:
     assert float(richtig[oberhalb].mean()) == pytest.approx(0.98)
 
 
+def test_mindestbelegung_ist_aus_dem_ziel_abgeleitet_nicht_gesetzt() -> None:
+    """Bindet die Mindestbelegung an ein **zweites** Ziel – sonst ist sie nur eine Zahl.
+
+    Die beiden Tests darüber prüfen ausschließlich den Vorgabewert 0,98 und seine 50. Ein
+    festes ``return 50`` in :func:`doccls.decide._mindestbelegung` bliebe damit unbemerkt,
+    und die tragende Behauptung des Moduldocs – die Zahl sei *aus dem Ziel abgeleitet* –
+    wäre unbelegt. Genau durch diese Lücke ist der Fehler in der Zwillingsfunktion
+    ``_mindestzahl_fuer_perzentil`` (zu streng für 80 und 90) unentdeckt geblieben.
+
+    Von Hand nachgerechnet für ``target = 0,9``: gesucht ist das kleinste ``n`` mit
+    ``(n − 1) / n >= 0,9``, also ``n = 10`` (9/10 = 0,9 hält, 8/9 = 0,889 hält nicht). Alle
+    drei Richtungen werden geprüft:
+
+    * 200 Dokumente, die 8 sichersten richtig: oberhalb der Schwelle mit 8 Dokumenten steht
+      Präzision 1,0, bei 9 sind es 8/9 = 0,889. Ein Wächter mit 8 gäbe hier eine Schwelle
+      zurück.
+    * 9 Dokumente, alle richtig: jede Schwelle hält 1,0, keine erreicht die Belegung 10 –
+      das unterscheidet einen Wächter mit 9 von einem mit 10. Die Meldung muss die
+      abgeleitete Zahl nennen, sonst bliebe ein festes 50 auch hier unsichtbar.
+    * 200 Dokumente, die 9 sichersten richtig: 9/10 = 0,9 hält das Ziel bei genau der
+      Belegung 10. Ein Wächter mit 11 – oder ein festes 50 – fällt hier auf.
+    """
+    konfidenz = np.linspace(1.0, 0.0, 200)
+    acht_richtig = np.zeros(200, dtype=bool)
+    acht_richtig[:8] = True
+    with pytest.raises(ValueError, match="noetigen 10"):
+        tau_for_precision(konfidenz, acht_richtig, target=0.9)
+
+    with pytest.raises(ValueError, match="noetigen 10"):
+        tau_for_precision(np.linspace(1.0, 0.0, 9), np.ones(9, dtype=bool), target=0.9)
+
+    neun_richtig = np.zeros(200, dtype=bool)
+    neun_richtig[:9] = True
+    tau = tau_for_precision(konfidenz, neun_richtig, target=0.9)
+    oberhalb = konfidenz >= tau
+    assert int(oberhalb.sum()) == 10
+    assert float(neun_richtig[oberhalb].mean()) == pytest.approx(0.9)
+
+
 def test_mindestbelegung_laesst_den_normalfall_ungehindert_durch() -> None:
     """Der Normalfall darf vom Wächter nicht angefasst werden.
 
@@ -432,6 +471,56 @@ def test_delta_laesst_genau_zwanzig_werte_durch() -> None:
     assert delta_for_percentile(np.linspace(0.0, 1.0, 20), percentile=95.0) == pytest.approx(
         0.95, abs=0.01
     )
+
+
+def test_mindestzahl_ist_aus_dem_perzentil_abgeleitet_nicht_gesetzt() -> None:
+    """Bindet die Mindestzahl an **zwei weitere** Perzentile – der Test, der fehlte.
+
+    Die beiden Tests darüber prüfen nur den Vorgabewert 95 und seine 20. Ein festes
+    ``return 20`` in :func:`doccls.decide._mindestzahl_fuer_perzentil` bliebe unbemerkt,
+    und genau durch diese Lücke ist ein Rechenfehler durchgerutscht: ``1 − percentile/100``
+    ergibt für 90 in Gleitkomma 0,09999999999999998 statt 0,1, und weil beide
+    Korrekturschleifen mit demselben verlorenen Wert rechnen, kam 11 heraus statt 10.
+    Gemessen war die Funktion für 80 und 90 um eins zu streng, für 95, 99 und 99,9 richtig.
+
+    Von Hand nachgerechnet – das kleinste ``n`` mit ``n * (1 − percentile/100) >= 1``:
+
+    * 90. Perzentil: ``n = 10``. Neun Werte müssen abgelehnt werden, zehn durchgehen.
+    * 80. Perzentil: ``n = 5``. Vier abgelehnt, fünf durch.
+
+    Die Sollwerte des Perzentils stehen dabei ebenfalls vorab fest: auf
+    ``linspace(0, 1, 10)`` liegt das 90. Perzentil auf 0,9, auf ``linspace(0, 1, 5)`` das
+    80. auf 0,8 (lineare Interpolation, siehe
+    :func:`test_delta_interpoliert_linear_zwischen_den_nachbarwerten`).
+    """
+    with pytest.raises(ValueError, match="noetig sind 10"):
+        delta_for_percentile(np.linspace(0.0, 1.0, 9), percentile=90.0)
+    assert delta_for_percentile(np.linspace(0.0, 1.0, 10), percentile=90.0) == pytest.approx(
+        0.9, abs=0.01
+    )
+
+    with pytest.raises(ValueError, match="noetig sind 5"):
+        delta_for_percentile(np.linspace(0.0, 1.0, 4), percentile=80.0)
+    assert delta_for_percentile(np.linspace(0.0, 1.0, 5), percentile=80.0) == pytest.approx(
+        0.8, abs=0.01
+    )
+
+
+def test_delta_interpoliert_linear_zwischen_den_nachbarwerten() -> None:
+    """Bindet die Interpolationsart – bei 20 Werten sitzt δ zwischen zwei Beobachtungen.
+
+    ``np.percentile`` kennt mehrere Verfahren, und die Voreinstellung ``linear`` ist eine
+    Wahl, keine Naturkonstante. Auf ``linspace(0, 1, 20)`` und dem 95. Perzentil liegt der
+    gesuchte Rang bei ``19 * 0,95 = 18,05``, also 5 Prozent des Wegs vom zweitobersten Wert
+    (0,947368) zum obersten (1,0) – gemessen: ``linear`` 0,95, ``lower`` 0,947368,
+    ``nearest`` 0,947368, ``midpoint`` 0,973684, ``higher`` 1,0.
+
+    Die bestehenden δ-Tests laufen mit einer Toleranz von 0,01 und unterscheiden ``linear``
+    nicht von ``lower`` – eine Mutation zu ``lower`` blieb grün. Hier steht der exakte Wert
+    0,95, und jedes andere Verfahren fällt auf.
+    """
+    werte = np.linspace(0.0, 1.0, 20)
+    assert delta_for_percentile(werte, percentile=95.0) == pytest.approx(0.95, abs=1e-12)
 
 
 def test_delta_lehnt_unmoegliche_perzentile_ab() -> None:
