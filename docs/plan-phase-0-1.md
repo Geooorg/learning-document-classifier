@@ -1,5 +1,30 @@
 # Phase 0 + 1: Testdaten und Ingestion — Implementierungsplan
 
+> **Abgearbeitet. Dieser Plan ist ab hier ein historisches Dokument, keine Referenz.**
+>
+> Der Code weicht an mehreren Stellen bewusst ab, und zwar überall dort, wo die Umsetzung
+> gezeigt hat, dass der Plan falsch lag. Wer wissen will, wie das System heute arbeitet,
+> liest den Code und `docs/konzept.md`, nicht diesen Plan. Die offenen Punkte stehen in
+> `docs/phase-1-offene-punkte.md`.
+>
+> Die wichtigsten Abweichungen, jede aus einem belegten Befund:
+>
+> | Plan | Code | Grund |
+> |---|---|---|
+> | `MIN_CHARS_PER_PAGE = 120` | `40` | 120 lag mitten in der Verteilung der echten Dokumente (113–157 Zeichen je Seite) und markierte 30 von 230 PDF mit Textebene fälschlich als OCR-bedürftig |
+> | Gold-Schnitt bei jedem Lauf gewürfelt | `config/splits.yaml`, einmal gewürfelt und festgeschrieben | eine neue Vorlage verschob drei von acht bestehenden über die Schnittgrenze |
+> | Dateinamen `RECHNUNG-standard-03.pdf` | `doc-0001.pdf` | aus dem Dateinamen allein waren 480 von 560 Klassen zu raten (Grundrate 14 %) |
+> | feste Blockzahl je Seite | gestreute Seitengruppen (`_page_groups`) | aus (Format, Segmentzahl) allein waren 61 % zu raten |
+> | `write_pdf` ohne Überlaufprüfung | Prüfung über das Ergebnis (`MIN_RENDERED_SHARE`, NFKC) | 2000 Zeichen in einer Tabellenzelle gingen still verloren, der Platzzähler blieb positiv |
+> | `needs_ocr` über die Segmentzahl | über die tatsächliche Seitenzahl | ein Scan mit getipptem Deckblatt galt als vollwertiges Textdokument |
+> | XLSX `data_only=True` allein | Rückfall auf die Formel | Formelzellen ohne Cache wurden still zu Leerzellen |
+> | mehrere Tests, die nicht fehlschlagen konnten | gestrichen oder durch Schranken ersetzt | siehe unten |
+>
+> Vier Tests aus diesem Plan konnten strukturell nicht fehlschlagen und wurden gestrichen
+> oder ersetzt. Das ist der häufigste Fehlertyp dieses Plans gewesen. Wer daraus einen
+> Folgeplan schreibt: jeder Test braucht eine **Mutationsprobe** — die Implementierung
+> gezielt falsch machen und nachsehen, ob der Test rot wird.
+
 > **Für Agenten:** Diese Aufgaben werden einzeln abgearbeitet. Schritte sind als Checkboxen
 > (`- [ ]`) geführt. Nach jeder Aufgabe wird geprüft und committet, bevor die nächste beginnt.
 
