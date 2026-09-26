@@ -1,5 +1,7 @@
 """Das Gold-Set ist eingefroren. Diese Zusicherung wird geprueft, nicht geglaubt."""
 
+from pathlib import Path
+
 import polars as pl
 import pytest
 
@@ -92,3 +94,44 @@ def test_gold_hat_mindestens_50_dokumente_je_klasse() -> None:
     je_klasse = gold_documents().group_by("class_key").len()
     zu_klein = je_klasse.filter(pl.col("len") < 50)
     assert zu_klein.height == 0, f"Zu kleine Gold-Klassen: {zu_klein.to_dicts()}"
+
+
+def test_dokument_ohne_manifestzeile_wird_gemeldet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Der Waechter in ``labelled_documents`` gegen den stillen Verlust.
+
+    Auf dem echten Bestand kann kein Test ihn ausloesen: Seit die Mailanhaenge eine
+    Manifestzeile haben, sind ``documents`` und ``manifest`` genau deckungsgleich, und
+    ``how="inner"`` liefert dasselbe wie ``how="left"``. Die Mutation ist dort ein
+    Nulleffekt – und damit waere der Waechter ungeprueft, obwohl er genau die Luecke
+    abdeckt, die dieses Projekt schon einmal zehn Dokumente gekostet hat.
+
+    Deshalb ein praeparierter Bestand: ein Dokument mehr in ``documents`` als im
+    Manifest. Faellt der Waechter weg oder wird aus ``left`` ein ``inner``, verschwindet
+    die Zeile stillschweigend statt zu melden.
+    """
+    parquet = tmp_path / "parquet"
+    generated = tmp_path / "generated"
+    parquet.mkdir()
+    generated.mkdir()
+
+    pl.DataFrame(
+        {"document_id": ["d1", "d2"], "source_path": ["pdf/a.pdf", "pdf/OHNE-WAHRHEIT.pdf"]}
+    ).write_parquet(parquet / "documents.parquet")
+    pl.DataFrame(
+        {
+            "source_path": ["pdf/a.pdf"],
+            "class_key": ["RECHNUNG"],
+            "template_id": ["T1"],
+            "variant": [0],
+            "split": ["train"],
+            "format": ["pdf"],
+        }
+    ).write_parquet(generated / "manifest.parquet")
+
+    monkeypatch.setattr("doccls.splits.PARQUET_DIR", parquet)
+    monkeypatch.setattr("doccls.splits.GENERATED_DIR", generated)
+
+    with pytest.raises(ValueError, match="OHNE-WAHRHEIT"):
+        labelled_documents()
