@@ -157,27 +157,49 @@ def test_kein_merkmal_ist_auf_dem_ganzen_bestand_konstant() -> None:
     assert not unerwartet, f"Merkmale ohne jede Streuung: {sorted(unerwartet)}"
 
 
-ABKUERZUNGSSCHRANKE = 0.90
+KOERBE = 50
+ABKUERZUNGSSCHRANKE = 0.94
 """Ab hier bildet ein einzelnes Merkmal die Klasse praktisch eins zu eins ab.
 
-Die Schranke lag zunaechst bei 0,60 und war damit das falsche Werkzeug: Sie vermischt
-zwei verschiedene Dinge. Eine ABKUERZUNG ist ein Merkmal, das die Klasse *ist* -- etwa
-ein aus dem Dateinamen oder der ``template_id`` abgeleiteter Wert; so eines trifft nahe
-100 %. Ein starkes, ECHTES Merkmal trifft ebenfalls deutlich ueber der Grundrate, ohne
-dass daran etwas faul waere: Rechnungen sind ziffernreicher als Vertraege, und Protokolle
-nennen mehr Termine. Bei 0,60 haette dieser Test dazu gefuehrt, genau die
-aussagekraeftigen Merkmale zu entfernen, die das Modell braucht -- und damit das Gegenteil
-seines Zwecks bewirkt.
+Beide Zahlen sind gemessen, nicht geschaetzt -- und der erste Versuch war falsch.
 
-Gemessen auf dem Bestand (570 Dokumente, Grundrate 16 %), die fuenf staerksten:
-``digit_ratio`` 74,2 %, ``date_count`` 73,7 %, ``date_density`` 68,1 %, ``chars_total``
-59,6 %, ``amount_count`` 57,9 %. Keines kommt der Klasse nahe genug, um als Abkuerzung zu
-gelten. Steigt eines davon in die Naehe von 0,90, ist etwas passiert, das man ansehen muss.
+Die Schranke lag zunaechst bei 0,60 bei zehn Koerben. Das war doppelt daneben. Erstens
+vermischt 0,60 zwei verschiedene Dinge: eine ABKUERZUNG (ein Merkmal, das die Klasse
+*ist* -- etwa aus einer laufenden Nummer abgeleitet) und ein starkes ECHTES Merkmal
+(Rechnungen sind ziffernreicher als Vertraege). Die Schranke haette dazu gefuehrt, genau
+die aussagekraeftigen Merkmale zu entfernen, die das Modell braucht. Zweitens war die
+Aufloesung zu grob: Mit zehn Koerben kommt ein reiner Bezeichner ueber 570 Dokumente und
+sieben Klassen nur auf 81,9 % -- der Waechter haette ihn durchgelassen.
 
-Dass einfache Zaehlmerkmale auf diesem Bestand ueberdurchschnittlich gut trennen, liegt an
-seiner Machart: 56 Vorlagen mit je zehn Varianten, jede mit fester Zahlendichte. Auf
-echten Dokumenten waere die Streuung groesser. Das ist eine bekannte Grenze des Korpus,
-kein Grund, die Merkmale zu beschneiden."""
+Gemessen ueber den ganzen Bestand, Bezeichner gegen staerkstes echtes Merkmal:
+
+    Koerbe   Bezeichner   staerkstes echtes Merkmal
+        10       81,9 %       74,2 %  (digit_ratio)
+        20       91,1 %       81,8 %
+        30       93,5 %       85,6 %
+        50       98,8 %       88,8 %  (date_density)
+
+Bei 50 Koerben ist der Abstand am groessten. Die Schranke 0,94 liegt mit gut fuenf
+Prozentpunkten Luft ueber dem staerksten echten Merkmal und knapp fuenf darunter unter dem
+Bezeichner. ``test_der_abkuerzungswaechter_faengt_einen_bezeichner`` haelt fest, dass sie
+wirklich faengt -- ein Waechter ohne eigenen Test ist eine Behauptung.
+
+Dass einfache Zaehlmerkmale hier ueberdurchschnittlich gut trennen, liegt an der Machart
+des Bestands: 56 Vorlagen mit je zehn Varianten, jede mit fester Zahlendichte. Auf echten
+Dokumenten waere die Streuung groesser. Bekannte Grenze des Korpus, kein Grund, Merkmale
+zu beschneiden."""
+
+
+def _stumpf_trefferquote(werte: np.ndarray, klassen: list[str]) -> float:
+    """Trefferquote des bestmoeglichen Entscheidungsstumpfs auf einem einzelnen Merkmal.
+
+    Werte in ``KOERBE`` Quantilkoerbe, je Korb die haeufigste Klasse raten.
+    """
+    grenzen = np.quantile(werte, np.linspace(1 / KOERBE, 1 - 1 / KOERBE, KOERBE - 1))
+    je_korb: dict[int, Counter[str]] = defaultdict(Counter)
+    for korb, klasse in zip(np.digitize(werte, grenzen), klassen, strict=True):
+        je_korb[int(korb)][klasse] += 1
+    return sum(z.most_common(1)[0][1] for z in je_korb.values()) / len(klassen)
 
 
 def test_kein_einzelnes_strukturmerkmal_verraet_die_klasse() -> None:
@@ -193,11 +215,7 @@ def test_kein_einzelnes_strukturmerkmal_verraet_die_klasse() -> None:
     """
     matrix, klassen = _bestandsmatrix(mit_klassen=True)
     for i, name in enumerate(STRUCTURAL_NAMES):
-        koerbe = np.digitize(matrix[:, i], np.quantile(matrix[:, i], np.linspace(0.1, 0.9, 9)))
-        je_korb: dict[int, Counter[str]] = defaultdict(Counter)
-        for korb, klasse in zip(koerbe, klassen, strict=True):
-            je_korb[int(korb)][klasse] += 1
-        treffer = sum(z.most_common(1)[0][1] for z in je_korb.values()) / len(klassen)
+        treffer = _stumpf_trefferquote(matrix[:, i], klassen)
         assert treffer <= ABKUERZUNGSSCHRANKE, (
             f"Merkmal {name} allein trifft {treffer:.1%} der Klassen (Grundrate 16 %). "
             "Das bildet die Klasse praktisch eins zu eins ab – pruefe, ob das Merkmal "
@@ -249,3 +267,34 @@ def _bestandsmatrix(mit_klassen: bool = False) -> tuple[np.ndarray, list[str]]:
 
     matrix = np.vstack(zeilen)
     return (matrix, klassen) if mit_klassen else (matrix, [])
+
+
+def test_der_abkuerzungswaechter_faengt_einen_bezeichner() -> None:
+    """Der Waechter selbst, geprueft statt behauptet.
+
+    Ohne diesen Test waere ``test_kein_einzelnes_strukturmerkmal_verraet_die_klasse`` eine
+    Zusicherung ohne Deckung: Er ist immer gruen, solange kein Merkmal die Schranke reisst
+    -- auch dann, wenn die Schranke so hoch oder die Aufloesung so grob ist, dass sie
+    ueberhaupt nichts faengt. Genau das war der Fall: Bei zehn Koerben kam ein reiner
+    Bezeichner nur auf 81,9 % und waere bei jeder Schranke ueber 0,82 durchgerutscht.
+
+    Geprueft wird mit dem denkbar blankesten Verraeter: der laufenden Nummer aus dem
+    Dateinamen. Sie traegt keinerlei Inhalt, aber die Dokumente sind nach Vorlage
+    durchnummeriert -- ein Merkmal daraus bildet die Klasse fast eins zu eins ab.
+    """
+    dokumente = read_table(PARQUET_DIR, "documents")
+    klasse_von = dict(labelled_documents().select(["document_id", "class_key"]).iter_rows())
+    nummern = np.array(
+        [
+            float("".join(c for c in zeile["file_name"] if c.isdigit()) or 0)
+            for zeile in dokumente.iter_rows(named=True)
+        ]
+    )
+    klassen = [klasse_von[zeile["document_id"]] for zeile in dokumente.iter_rows(named=True)]
+
+    treffer = _stumpf_trefferquote(nummern, klassen)
+    assert treffer > ABKUERZUNGSSCHRANKE, (
+        f"Ein reiner Bezeichner trifft nur {treffer:.1%} und bliebe unter der Schranke "
+        f"{ABKUERZUNGSSCHRANKE:.0%} – der Waechter faengt dann gar nichts. Entweder KOERBE "
+        "erhoehen oder die Schranke senken."
+    )
