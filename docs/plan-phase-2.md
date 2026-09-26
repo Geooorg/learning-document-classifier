@@ -2286,6 +2286,51 @@ git add src/doccls/features/__init__.py src/doccls/features/ngrams.py \
 git commit -m "Merkmalsmatrix zusammensetzen, versioniert ablegen"
 ```
 
+### Nachtrag vor der Umsetzung — drei Planfehler, gefunden bei der Nachprüfung von Aufgabe 5 und 7
+
+Diese Punkte gehen den Schritten oben vor, wo sie ihnen widersprechen.
+
+**1. `praefix_fuer` ist ungebunden (Lücke aus Aufgabe 5).** Die Mutation „`praefix_fuer`
+liefert immer `e5_prefix`" überlebt die ganze Suite. Aufgabe 5 schiebt den fehlenden Test
+nach „Aufgabe 8 (`build_features`)" — gemeint ist diese Aufgabe, `build_matrix`. Der
+`FakeEmbedder` heißt `"fake"` und kann die beiden Präfixpfade deshalb nicht unterscheiden.
+Nachzutragen, beide über `build_matrix` und nicht über `document_vector`:
+
+- mit einem `FakeEmbedder`, dessen `name` `"e5"` ist: **jeder** Text in `gesehen` beginnt
+  mit `"passage: "`;
+- mit `name = "bge-m3"`: **keiner** beginnt damit.
+
+Das bindet beide Richtungen: ein fest verdrahtetes `e5_prefix` in `build_matrix` ebenso wie
+ein `praefix_fuer`, das immer dasselbe liefert. Der `FakeEmbedder` braucht dafür einen
+einstellbaren `name` und muss aus `tests/test_features_embedding.py` in eine gemeinsame
+Datei (`tests/conftest.py`), statt kopiert zu werden. Mutationsprobe um beide Mutationen
+ergänzen.
+
+**2. Der Leckagetest in Schritt 1 kann strukturell nicht fehlschlagen.** Das Vokabular
+enthält 3- bis 5-Gramme, `" ".join(...)` trennt sie durch Leerzeichen; `marker[:6]` ist
+sechs Zeichen lang und kommt darin nie vor. Nachgemessen: Mit absichtlich eingebauter
+Leckage (`fit(training + gold)`) bleibt die Assertion grün, `marker[:5]` stünde im
+Vokabular. Außerdem ruft der Test `build_matrix` gar nicht auf — die Kernmutation 1 aus
+Schritt 7 („`fit` auf allen Texten") läge also außerhalb seiner Reichweite, selbst wenn die
+Assertion stimmte. Ersatz, beides nötig:
+
+- Die Anpassung des n-Gramm-Blocks ist Training im Sinne der globalen Vorgaben. Die
+  Funktion, die sie in `build_matrix` vornimmt, ruft `assert_no_gold` auf dem Rahmen der
+  Texte auf, die sie anpasst — ein Test legt ihr ein Gold-Dokument vor und erwartet den
+  `ValueError`.
+- Die Vokabularprüfung über `build_matrix` (oder die eben genannte Funktion) und auf
+  Eintragsebene: `assert not [e for e in vokabular if "zzq" in e]`, mit einem Marker, der
+  im Gold-Text steht und dessen erstes 3-Gramm in keinem Trainingstext vorkommt.
+
+**3. `svd_components: 256` ist auf diesem Korpus nicht erreichbar.** `TruncatedSVD` liefert
+höchstens so viele Komponenten, wie es Anpassungstexte gibt — hier 140 —, und zwar ohne
+Warnung. `NgramBlock.fit` wirft seit der Nachprüfung von Aufgabe 7 in diesem Fall, statt
+140 Spalten bei zugesicherten 256 zu liefern. Die in Schritt 6 erwartete Breite
+768+768+256+41 = 1833 ist deshalb so nicht zu erreichen. **Vor der Umsetzung ist der Wert in
+`features.yaml` zu entscheiden** (er geht in die `feature_version` ein). Gemessen auf den 140
+Trainingstexten: Bei 128 Komponenten ist die SVD noch exakt, der Seed ohne Wirkung; bei 64
+weichen zwei Seeds in 12 Komponenten um bis zu 0,01 ab.
+
 ---
 
 ## Aufgabe 10: Klassifikator und zwei Vergleichsarme
