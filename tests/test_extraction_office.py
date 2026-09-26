@@ -9,10 +9,11 @@ from pathlib import Path
 
 import docx
 import openpyxl
+import polars as pl
 import pymupdf
 import pytest
 
-from doccls.config import RAW_DIR
+from doccls.config import GENERATED_DIR, RAW_DIR
 from doccls.extraction import extract
 from doccls.extraction.pdf import heading_by_font_size
 from doccls.models import Document, SegmentKind, normalize_text
@@ -47,6 +48,18 @@ def erste(ordner: str) -> Path:
     return dateien[0]
 
 
+def pfade_fuer_vorlage(template_id: str) -> list[Path]:
+    """Alle Dateien einer Vorlage, über das Manifest gefunden – nicht über den Dateinamen.
+
+    Der ist seit der Schließung der Dateiname-Abkürzung neutral (``doc-0001.pdf``) und
+    verrät weder Klasse noch Vorlage mehr; ``template_id`` steht nur noch im Manifest.
+    """
+    manifest = pl.read_parquet(GENERATED_DIR / "manifest.parquet")
+    zeilen = manifest.filter(pl.col("template_id") == template_id).sort("source_path")
+    assert not zeilen.is_empty(), f"Keine Testdaten für Vorlage {template_id!r}"
+    return [RAW_DIR / pfad for pfad in zeilen["source_path"]]
+
+
 def test_pdf_ergibt_ein_segment_je_seite() -> None:
     doc, daten = dokument(erste("pdf"), MEDIA_TYPE_PDF)
     segmente = extract(doc, daten)
@@ -61,14 +74,22 @@ def test_pdf_erfasst_alle_seiten() -> None:
     Prüfungen unbemerkt: Sie fordern eine fortlaufende Indexfolge und ``S. 1`` als erste
     Fundstelle, beides bliebe auch bei einem einzigen erfassten Segment wahr. Deshalb wird
     hier zusätzlich gegen die tatsächliche Seitenzahl der Quelle geprüft.
+
+    Welche Datei mehrseitig ist, steht nicht mehr fest: ``_page_groups`` würfelt die
+    Seitenaufteilung je Variante, damit die Seitenzahl nicht zur Abkürzung wird (Konzept
+    § 6.3). Gesucht wird deshalb über alle PDF-Testdateien, bis eine mehrseitige gefunden
+    ist – bei 230 PDF-Dokumenten und einer Streuung, die auf keiner Vorlage zuverlässig auf
+    eine Seite zusammenfällt, kann das nicht leerlaufen.
     """
-    pfad = erste("pdf")
-    doc, daten = dokument(pfad, MEDIA_TYPE_PDF)
-    segmente = extract(doc, daten)
-    with pymupdf.open(stream=daten, filetype="pdf") as pdf:
-        seitenzahl = len(pdf)
-    assert seitenzahl > 1, "Testdatei hat nur eine Seite – Prüfung liefe leer"
-    assert len(segmente) == seitenzahl
+    for pfad in sorted((RAW_DIR / "pdf").glob("*.pdf")):
+        doc, daten = dokument(pfad, MEDIA_TYPE_PDF)
+        with pymupdf.open(stream=daten, filetype="pdf") as pdf:
+            seitenzahl = len(pdf)
+        if seitenzahl > 1:
+            segmente = extract(doc, daten)
+            assert len(segmente) == seitenzahl
+            return
+    raise AssertionError("Keine mehrseitige PDF-Testdatei gefunden – Prüfung liefe leer")
 
 
 def test_pdf_segmenttext_deckt_gesamten_seitentext_ab() -> None:
@@ -179,8 +200,7 @@ def test_docx_tabellen_ergeben_je_ein_segment() -> None:
     solange das Dokument auch Absatzabschnitte enthält. Geprüft wird deshalb die Anzahl
     der Tabellen in der Quelle gegen die Anzahl der Tabellensegmente.
     """
-    pfad = RAW_DIR / "docx" / "GUTSCHRIFT-bonus-00.docx"
-    assert pfad.exists(), f"{pfad} fehlt – erst den Generator laufen lassen"
+    pfad = pfade_fuer_vorlage("GUTSCHRIFT-bonus")[0]
     doc, daten = dokument(pfad, MEDIA_TYPE_DOCX)
 
     quelle = docx.Document(io.BytesIO(daten))
@@ -279,8 +299,7 @@ def test_tabellenzeile_bleibt_als_einheit_beisammen() -> None:
     Suche nach "EUR" im zusammengefügten Gesamttext wäre auch dann wahr, wenn jede Zelle
     ein eigenes Segment bekäme – also genau im Fehlerfall.
     """
-    pfad = RAW_DIR / "xlsx" / "RECHNUNG-tabelle-00.xlsx"
-    assert pfad.exists(), f"{pfad} fehlt – erst den Generator laufen lassen"
+    pfad = pfade_fuer_vorlage("RECHNUNG-tabelle")[0]
     doc, daten = dokument(pfad, MEDIA_TYPE_XLSX)
     treffer = [s for s in extract(doc, daten) if "Einzelpreis:" in s.text]
     assert treffer, "Kein Segment enthält die Spalte 'Einzelpreis'"
@@ -295,8 +314,7 @@ def test_xlsx_segmenttext_erfasst_alle_datenzeilen() -> None:
     garantiert gefüllte Spalte im Segmenttext auftaucht, gegen die tatsächliche Anzahl der
     Datenzeilen (Kopfzeile ausgenommen), unabhängig ermittelt.
     """
-    pfad = RAW_DIR / "xlsx" / "RECHNUNG-tabelle-00.xlsx"
-    assert pfad.exists(), f"{pfad} fehlt – erst den Generator laufen lassen"
+    pfad = pfade_fuer_vorlage("RECHNUNG-tabelle")[0]
     doc, daten = dokument(pfad, MEDIA_TYPE_XLSX)
 
     mappe = openpyxl.load_workbook(io.BytesIO(daten), read_only=True, data_only=True)

@@ -198,35 +198,41 @@ def write_docx(path: Path, spec: DocumentSpec) -> None:
 
 
 def write_xlsx(path: Path, spec: DocumentSpec) -> None:
-    """Ein Blatt „Dokument“ mit Fließtext; eine Tabelle bekommt ein eigenes Blatt – außer sie
-    liegt laut ``spec.page_groups`` in derselben Gruppe wie ihr Vorgänger, dann wird sie als
-    zusätzliche Zeilen in das laufende Blatt einsortiert. Die Zellinhalte sind in beiden
-    Fällen dieselben, nur ihre Verteilung auf Blätter unterscheidet sich – sonst stünde die
-    Blattzahl je Vorlage fest und verriete die Klasse (siehe ``_page_groups``)."""
+    """Fließtext in einem oder mehreren „Dokument“-Blättern, je Tabelle ein eigenes Blatt.
+
+    Eine Tabelle bekommt immer ihr eigenes Blatt – daran rührt die Streuung nicht, sonst
+    verlöre eine Zeile ihre Kopfzeile und damit die „Spalte: Wert“-Zuordnung, um die es
+    ``extract_xlsx`` gerade geht. Gestreut wird stattdessen die Zahl der Fließtext-Blätter:
+    Beginnt laut ``spec.page_groups`` an einem Block ohne Tabelle eine neue Gruppe, geht der
+    Fließtext ab hier in einem neuen „Dokument N“-Blatt weiter. Ohne das stünde die Blattzahl
+    einer Vorlage fest (ein Blatt je Tabelle plus ein Fließtextblatt) und verriete die
+    Klasse."""
     mappe = openpyxl.Workbook()
-    blatt = mappe.active
-    if blatt is None:
+    erstes_blatt = mappe.active
+    if erstes_blatt is None:
         raise ValueError("Neue Arbeitsmappe hat kein aktives Blatt")
-    blatt.title = "Dokument"
-    blatt.append([spec.title])
+    erstes_blatt.title = "Dokument"
+    haupt = erstes_blatt
+    haupt.append([spec.title])
+    hauptblattnummer = 1
     tabellennummer = 0
-    for beginnt_gruppe, block in zip(_group_starts(spec.page_groups), spec.blocks, strict=True):
+    for index, (beginnt_gruppe, block) in enumerate(
+        zip(_group_starts(spec.page_groups), spec.blocks, strict=True)
+    ):
+        if index > 0 and beginnt_gruppe and not block.table:
+            hauptblattnummer += 1
+            haupt = mappe.create_sheet(f"Dokument {hauptblattnummer}"[:31])
         if block.heading:
-            blatt.append([block.heading])
+            haupt.append([block.heading])
         for absatz in block.paragraphs:
-            blatt.append([absatz])
+            haupt.append([absatz])
         if block.table:
             tabellennummer += 1
             kopf, zeilen = block.table
-            if beginnt_gruppe:
-                tabellenblatt = mappe.create_sheet(f"Positionen {tabellennummer}"[:31])
-                tabellenblatt.append(list(kopf))
-                for zeile in zeilen:
-                    tabellenblatt.append(list(zeile))
-            else:
-                blatt.append(list(kopf))
-                for zeile in zeilen:
-                    blatt.append(list(zeile))
+            tabellenblatt = mappe.create_sheet(f"Positionen {tabellennummer}"[:31])
+            tabellenblatt.append(list(kopf))
+            for zeile in zeilen:
+                tabellenblatt.append(list(zeile))
     mappe.properties.title = spec.title
     mappe.properties.creator = "Synthetische Testdaten"
     mappe.properties.created = mappe.properties.modified = FIXED_TIMESTAMP.replace(tzinfo=None)
