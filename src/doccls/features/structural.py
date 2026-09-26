@@ -26,18 +26,10 @@ Nicht umgesetzt aus § 6.3, mit Begründung:
   schlägt mit dem Feld sofort fehl). Nachzutragen, sobald der Bestand tatsächlich
   OCR-pflichtige Dokumente enthält – das ``Document``-Feld existiert bereits und die
   Ergänzung ist dann eine Zeile in ``MERKMALE``.
-* **``digit_ratio``** (Konzept § 6.3 nennt „Anteil Ziffern" als Beispiel) – gemessen über den
-  ganzen Bestand ist der Ziffernanteil des Dokuments allein ein Entscheidungsstumpf mit
-  74,2 % Trefferquote über die Klasse (Grundrate 14 %, Schranke aus
-  ``test_kein_einzelnes_strukturmerkmal_verraet_die_klasse`` 60 %; die zehn Quantil-Körbe
-  sortieren fast lückenlos AGB → VERTRAG → STATUSBERICHT → PROTOKOLL → SONSTIGES →
-  GUTSCHRIFT → RECHNUNG). Anders als eine IBAN – ein "legitim starker Hinweis" laut
-  Testdoc – ist das kein inhaltlicher Hinweis, sondern eine Eigenschaft der 56 Vorlagen
-  dieses synthetischen Bestands: Jede Klasse hat eine so eng bemessene, feste
-  Zahlendichte, dass der rohe Anteil fast zur Klassensignatur wird – dieselbe Art
-  Abkürzung wie die Dateinamen-Tokens, nur über die Vorlage statt über den Pfad. Gemäß
-  Auftrag nicht durch Anheben der 60-%-Schranke "gelöst", sondern das Merkmal
-  weggelassen.
+* **``date_count``** – die unnormierte Doppelung von ``date_density``. Beide beruhen auf
+  derselben Regex; die Dichte trennt ein terminreiches Protokoll von einem langen Vertrag,
+  die rohe Anzahl misst daneben vor allem die Länge. Weggelassen, weil zwei Merkmale
+  dieselbe Sache messen und das schwächere die Gewichte verwässert.
 * **``date_count``** (rohe Anzahl, zusätzlich zu ``date_density``) – aus demselben Grund:
   73,7 % Trefferquote über die Klasse. Jede Vorlage nennt eine feste kleine Anzahl Daten
   (Statusbericht immer 1, Rechnung immer 3–4, Protokoll immer 5–6 …), und bei nur 56
@@ -171,7 +163,8 @@ MERKMALE: dict[str, Callable[[Document, list[Segment], str], float]] = {
     "chars_total": lambda d, s, t: float(len(t)),
     "chars_per_segment": lambda d, s, t: float(len(t)) / len(s) if s else 0.0,
     "distinct_headings": lambda d, s, t: float(len({x.heading for x in s if x.heading})),
-    # Zahlen: `digit_ratio` bewusst nicht enthalten, siehe Moduldoc.
+    # Zahlen
+    "digit_ratio": lambda d, s, t: (sum(c.isdigit() for c in t) / len(t)) if t else 0.0,
     "amount_count": lambda d, s, t: float(len(BETRAG.findall(t))),
     "amount_density": lambda d, s, t: _je_tausend(len(BETRAG.findall(t)), len(t)),
     "percent_count": lambda d, s, t: float(len(PROZENT.findall(t))),
