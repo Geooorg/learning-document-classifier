@@ -60,3 +60,11 @@ untyped_calls_exclude = ["pymupdf"]
 # pymupdf bringt py.typed mit, annotiert seine Funktionen aber nicht. Ohne diese Ausnahme
 # müsste jede Aufrufstelle einzeln entschärft werden; disallow_untyped_calls bleibt für
 # alles Übrige in Kraft.
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*"]
+ignore_missing_imports = true
+# scikit-learn liefert weder einen py.typed-Marker noch ein separates Stub-Paket (Stand
+# 1.9.1, geprüft). Ohne diese Ausnahme würde jede Importstelle einzeln als
+# "import-untyped" gemeldet, obwohl es keine Ursache im eigenen Code gibt, die sich
+# beheben ließe.
