@@ -14,6 +14,7 @@ from pathlib import Path
 from doccls.config import GENERATED_DIR, RAW_DIR
 from doccls.generation.content import build_corpus
 from doccls.generation.manifest import (
+    assign_document_names,
     assign_splits,
     compare_with_frozen,
     load_frozen_splits,
@@ -49,11 +50,15 @@ def main() -> None:
     # Anhang wird beim Einlesen ein eigenständiges Dokument mit Elternbezug (Konzept § 5).
     # Vereinfachung: Mailkörper und Anhang tragen denselben Inhalt – geprüft wird der Weg,
     # nicht die Redaktion.
+    #
+    # Die Dateinamen selbst sind neutral (siehe assign_document_names) – weder der
+    # Dateiname noch, für Mailanhänge, der Anhangname dürfen den Klassenschlüssel tragen.
+    # Klasse und Vorlage stehen ausschließlich im Manifest.
+    namen = assign_document_names(korpus)
     pfade: list[Path] = []
     zwischenablage = args.out.parent / "tmp-anhaenge"
-    for spec in korpus:
+    for spec, name in zip(korpus, namen, strict=True):
         fmt = spec.formats[0]
-        name = f"{spec.template_id}-{spec.variant:02d}"
         basis = args.out / fmt / name
         if fmt == "eml" and spec.template_id.endswith("-anhang"):
             anhang = write(zwischenablage / name, spec, "pdf").read_bytes()

@@ -82,6 +82,19 @@ def block_text(block: Block) -> str:
     return "\n".join(zeilen)
 
 
+def _group_starts(groups: tuple[int, ...]) -> list[bool]:
+    """Je Block: beginnt hier eine neue Gruppe (Seite/Segment) oder gehört er noch zur
+    vorigen? Aus ``spec.page_groups`` (Blockanzahl je Gruppe) abgeleitet – dieselbe
+    Aufteilung, die ``write_pdf`` in Seiten übersetzt, steuert hier, ob eine Überschrift
+    ohne eigene Vorlagen-Tabelle als Word-Überschrift geschrieben wird (DOCX) bzw. ob eine
+    Tabelle ein eigenes Blatt bekommt (XLSX). So hängt die Segmentzahl auch in diesen
+    Formaten nicht mehr starr an der Vorlage."""
+    starts: list[bool] = []
+    for groesse in groups:
+        starts += [True] + [False] * (groesse - 1)
+    return starts
+
+
 def normalize_zip(path: Path) -> None:
     """ZIP-Zeitstempel und das Änderungsdatum in ``docProps/core.xml`` fixieren.
 
@@ -105,10 +118,22 @@ def normalize_zip(path: Path) -> None:
 
 
 def write_pdf(path: Path, spec: DocumentSpec) -> None:
-    """Ein Block je Seite, damit Seitenzahlen als Fundstelle stabil bleiben."""
+    """Seiten nach ``spec.page_groups`` füllen – mehrere Blöcke können dieselbe Seite teilen.
+
+    Die Seite bleibt die Fundstelle (Seitenzahlen stabil), aber nicht mehr zwingend genau
+    ein Block: eine je Vorlage feste Seitenzahl wäre sonst ein Merkmal der Herkunft, nicht
+    des Inhalts (``_page_groups`` in ``generation/content.py``). Der Text selbst – welcher
+    Block was sagt – ändert sich dadurch nicht, nur seine Verteilung auf Seiten.
+    """
     doc = pymupdf.open()
-    seiten = ["<h1>" + _escape(spec.title) + "</h1>" + block_html(spec.blocks[0])]
-    seiten += [block_html(block) for block in spec.blocks[1:]]
+    seiten: list[str] = []
+    index = 0
+    for seitennummer, groesse in enumerate(spec.page_groups):
+        gruppe = spec.blocks[index : index + groesse]
+        index += groesse
+        teile = ["<h1>" + _escape(spec.title) + "</h1>"] if seitennummer == 0 else []
+        teile += [block_html(block) for block in gruppe]
+        seiten.append("".join(teile))
     for nummer, html in enumerate(seiten, start=1):
         seite = doc.new_page(width=595, height=842)  # A4
         rest, _ = seite.insert_htmlbox(
@@ -138,11 +163,20 @@ def write_pdf(path: Path, spec: DocumentSpec) -> None:
 
 
 def write_docx(path: Path, spec: DocumentSpec) -> None:
+    """Überschriften werden zu Word-„Heading“-Absätzen – außer eine Überschrift ohne eigene
+    Tabelle liegt laut ``spec.page_groups`` in derselben Gruppe wie ihr Vorgänger; dann wird
+    sie ein gewöhnlicher Absatz. ``extract_docx`` zieht Segmentgrenzen nur an „Heading“-
+    Absätzen, eine Tabelle dagegen immer an ihrer eigenen Segmentgrenze – deshalb bleiben
+    Tabellenüberschriften unangetastet. Der Text selbst ändert sich nicht, nur ob er als
+    eigenes Segment zählt."""
     dokument: DocxDocument = docx.Document()
     dokument.add_heading(spec.title, level=1)
-    for block in spec.blocks:
+    for beginnt_gruppe, block in zip(_group_starts(spec.page_groups), spec.blocks, strict=True):
         if block.heading:
-            dokument.add_heading(block.heading, level=2)
+            if beginnt_gruppe or block.table:
+                dokument.add_heading(block.heading, level=2)
+            else:
+                dokument.add_paragraph(block.heading)
         for absatz in block.paragraphs:
             dokument.add_paragraph(absatz)
         if block.table:
@@ -164,25 +198,35 @@ def write_docx(path: Path, spec: DocumentSpec) -> None:
 
 
 def write_xlsx(path: Path, spec: DocumentSpec) -> None:
-    """Ein Blatt „Dokument“ mit Fließtext, je Tabelle ein eigenes Blatt."""
+    """Ein Blatt „Dokument“ mit Fließtext; eine Tabelle bekommt ein eigenes Blatt – außer sie
+    liegt laut ``spec.page_groups`` in derselben Gruppe wie ihr Vorgänger, dann wird sie als
+    zusätzliche Zeilen in das laufende Blatt einsortiert. Die Zellinhalte sind in beiden
+    Fällen dieselben, nur ihre Verteilung auf Blätter unterscheidet sich – sonst stünde die
+    Blattzahl je Vorlage fest und verriete die Klasse (siehe ``_page_groups``)."""
     mappe = openpyxl.Workbook()
     blatt = mappe.active
     if blatt is None:
         raise ValueError("Neue Arbeitsmappe hat kein aktives Blatt")
     blatt.title = "Dokument"
     blatt.append([spec.title])
-    for block in spec.blocks:
+    tabellennummer = 0
+    for beginnt_gruppe, block in zip(_group_starts(spec.page_groups), spec.blocks, strict=True):
         if block.heading:
             blatt.append([block.heading])
         for absatz in block.paragraphs:
             blatt.append([absatz])
-    for nummer, block in enumerate((b for b in spec.blocks if b.table), start=1):
-        assert block.table is not None
-        kopf, zeilen = block.table
-        tabellenblatt = mappe.create_sheet(f"Positionen {nummer}"[:31])
-        tabellenblatt.append(list(kopf))
-        for zeile in zeilen:
-            tabellenblatt.append(list(zeile))
+        if block.table:
+            tabellennummer += 1
+            kopf, zeilen = block.table
+            if beginnt_gruppe:
+                tabellenblatt = mappe.create_sheet(f"Positionen {tabellennummer}"[:31])
+                tabellenblatt.append(list(kopf))
+                for zeile in zeilen:
+                    tabellenblatt.append(list(zeile))
+            else:
+                blatt.append(list(kopf))
+                for zeile in zeilen:
+                    blatt.append(list(zeile))
     mappe.properties.title = spec.title
     mappe.properties.creator = "Synthetische Testdaten"
     mappe.properties.created = mappe.properties.modified = FIXED_TIMESTAMP.replace(tzinfo=None)

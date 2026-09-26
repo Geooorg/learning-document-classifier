@@ -54,6 +54,12 @@ class DocumentSpec:
     title: str
     blocks: tuple[Block, ...]
     formats: tuple[str, ...]
+    page_groups: tuple[int, ...]
+    """Wie viele aufeinanderfolgende Blöcke beim PDF-Schreiben auf dieselbe Seite kommen –
+    Summe ergibt ``len(blocks)``. Ohne Streuung stünde je Vorlage eine feste Seitenzahl fest
+    (``write_pdf`` legte sonst einen Block je Seite an) und verriete die Klasse, ohne dass es
+    um Inhalt ginge (Abkürzung, siehe docs/testdaten.md § „Segmentzahl“). Kommt aus
+    ``_page_groups`` und demselben geseedeten Zufall wie der Rest der Vorlage."""
 
 
 @dataclass(frozen=True)
@@ -606,6 +612,39 @@ TEMPLATES: tuple[Template, ...] = (
 )
 
 
+PAGE_MERGE_PROBABILITY = 0.8
+"""Wahrscheinlichkeit, mit der ein Block beim PDF-Schreiben auf dieselbe Seite kommt wie
+sein Vorgänger, statt eine neue Seite zu beginnen. Bei 0 ergäbe sich wieder die alte,
+je Vorlage feste Seitenzahl (siehe ``_page_groups``) – der Wert ist so gewählt, dass der
+bestmögliche (Format, Segmentzahl)-Rater in ``test_struktur_verraet_die_klasse_nicht``
+unter der dortigen Schranke bleibt."""
+
+
+def _page_groups(rnd: random.Random, block_count: int) -> tuple[int, ...]:
+    """Blöcke zu PDF-Seiten gruppieren – rein die Aufteilung, kein Eingriff in den Text.
+
+    Ohne dies läge die Seitenzahl (= Segmentzahl, ``write_pdf`` legt sonst einen Block je
+    Seite an) je Vorlage fest, weil die Blockzahl einer Vorlage strukturell konstant ist.
+    Damit wäre die Segmentzahl ein Merkmal der Herkunft, nicht des Inhalts – genau die
+    Abkürzung, die ``test_struktur_verraet_die_klasse_nicht`` verbietet. Der Entscheid für
+    jede der ``block_count - 1`` Seitengrenzen kommt aus demselben geseedeten Zufall wie der
+    Rest der Vorlage, ist also reproduzierbar, ohne dass ein Block seinen Platz in der
+    Reihenfolge oder seinen Text verliert.
+    """
+    if block_count <= 1:
+        return (block_count,)
+    gruppen: list[int] = []
+    laufend = 1
+    for _ in range(block_count - 1):
+        if rnd.random() < PAGE_MERGE_PROBABILITY:
+            laufend += 1
+        else:
+            gruppen.append(laufend)
+            laufend = 1
+    gruppen.append(laufend)
+    return tuple(gruppen)
+
+
 def build_corpus(seed: int = 42) -> list[DocumentSpec]:
     """Je Vorlage ``VARIANTS_PER_TEMPLATE`` Varianten.
 
@@ -618,6 +657,10 @@ def build_corpus(seed: int = 42) -> list[DocumentSpec]:
         for variant in range(VARIANTS_PER_TEMPLATE):
             rnd = random.Random(f"{seed}:{template.template_id}:{variant}")
             titel, bloecke = template.build(rnd)
+            # Erst der Vorlage ihre Zufallszahlen fürs Inhaltliche geben, danach – aus
+            # demselben Strom, damit derselbe Seed dieselbe Vorlage ergibt – über die
+            # Seitenaufteilung entscheiden. Der Inhalt der Blöcke bleibt davon unberührt.
+            seiten = _page_groups(rnd, len(bloecke))
             specs.append(
                 DocumentSpec(
                     class_key=template.class_key,
@@ -626,6 +669,7 @@ def build_corpus(seed: int = 42) -> list[DocumentSpec]:
                     title=titel,
                     blocks=bloecke,
                     formats=template.formats,
+                    page_groups=seiten,
                 )
             )
     return specs

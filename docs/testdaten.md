@@ -30,6 +30,22 @@ Korpus und meldet sowohl neue als auch verwaiste Vorlagen (Einträge ohne zugeh�
 mehr). Verwaiste Einträge werden gemeldet, nicht automatisch gelöscht — ein Mensch
 entscheidet.
 
+## Dateinamen
+
+Dateien heißen `doc-0001.pdf`, `doc-0002.docx`, … — fortlaufend über den gesamten Korpus in
+der festen Reihenfolge von `TEMPLATES` (`assign_document_names`), unabhängig von Klasse,
+Vorlage oder Format. Dasselbe gilt für den Dateinamen eines Mailanhangs innerhalb einer
+`.eml`. Der Name trägt bewusst keine Information: Klasse, `template_id`, `variant` und
+`split` stehen ausschließlich im Manifest (`data/generated/manifest.parquet`,
+`config/splits.yaml`). Ein Dateiname wie das frühere `AGB-allgemein-00.pdf` wäre auf diesem
+Korpus perfekt klassentrennscharf und in der Realität wertlos (Konzept § 6.3 nennt
+„Dateinamen-Tokens" als Herkunftsmerkmal — eines, das ein Modell lernen würde, wenn der Name
+es hergäbe). `test_dateiname_verraet_die_klasse_nicht` in `tests/test_generation_content.py`
+deckelt die Trefferquote des bestmöglichen Dateiname-Raters.
+
+Die `template_id`-Muster in der folgenden Tabelle (`GUTSCHRIFT-*` u. Ä.) beziehen sich auf
+die gleichnamige Manifest-Spalte, nicht mehr auf den Dateinamen.
+
 ## Absichtlich eingebaute Schwierigkeiten
 
 | Nr. | Sachverhalt | Wo | Wozu |
@@ -41,6 +57,8 @@ entscheidet.
 | 5 | Jede Klasse in mindestens zwei Formaten; jedes Format trägt mindestens drei Klassen | gesamter Korpus | verhindert die Abkürzung „Format ⇒ Klasse“ |
 | 6 | Gemeinsamer Briefkopf und identische Fußzeile über alle Klassen | gesamter Korpus | verhindert die Abkürzung „Layout ⇒ Klasse“ |
 | 7 | `SONSTIGES` bewusst heterogen (Anschreiben, Lieferschein, Werbung, Anleitung, Bescheinigung) | `SONST-*` | die Restklasse hat kein gemeinsames Merkmal (Konzept § 2) |
+| 8 | Neutrale, fortlaufende Dateinamen ohne Klassen- oder Vorlagenbezug (`doc-0001.pdf`) | gesamter Korpus (`assign_document_names`) | verhindert die Abkürzung „Dateiname ⇒ Klasse“ |
+| 9 | PDF-Seiten, DOCX-Abschnitte und XLSX-Tabellenblätter werden je Variante zufällig gruppiert, statt starr an der Blockzahl der Vorlage zu hängen | gesamter Korpus (`_page_groups`) | verhindert die Abkürzung „Segmentzahl ⇒ Klasse“ |
 
 ## Was noch fehlt
 

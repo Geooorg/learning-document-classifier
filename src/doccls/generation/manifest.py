@@ -174,6 +174,27 @@ def report_template_drift(neu: list[str], verwaist: list[str]) -> None:
         )
 
 
+DOCUMENT_NAME_WIDTH = 4
+"""Stellen der laufenden Nummer in ``doc-0001`` – reicht für die 560 Dokumente des
+heutigen Korpus mit Luft nach oben, ohne dass die Breite bei jedem Wachstum wandert."""
+
+
+def assign_document_names(corpus: list[DocumentSpec]) -> list[str]:
+    """Neutrale, fortlaufende Dateinamen ohne Klassensignal – ``doc-0001``, ``doc-0002``, …
+
+    Der Dateiname selbst darf die Klasse nicht verraten (Konzept § 6.3 nennt „Dateinamen-
+    Tokens" als Merkmal der Gruppe *Herkunft* – auf diesem Korpus wäre es aber perfekt
+    trennscharf und in der Realität wertlos, siehe ``test_dateiname_verraet_die_klasse_nicht``
+    in ``tests/test_generation_content.py``). Klasse und Vorlage stehen nur noch im Manifest.
+
+    Die Nummerierung ist deterministisch: ``corpus`` ist eine Liste (keine Menge, kein
+    Dict-Iterationsergebnis), deren Reihenfolge aus der festen ``TEMPLATES``-Tupelreihenfolge
+    und den Varianten 0..9 stammt – ``enumerate`` darüber liefert bei gleichem Korpus immer
+    dieselben Namen.
+    """
+    return [f"doc-{i:0{DOCUMENT_NAME_WIDTH}d}" for i in range(1, len(corpus) + 1)]
+
+
 def manifest_frame(
     corpus: list[DocumentSpec], splits: dict[str, Split], paths: list[Path], root: Path
 ) -> pl.DataFrame:
