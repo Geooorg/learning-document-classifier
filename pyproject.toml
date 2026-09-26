@@ -64,7 +64,10 @@ untyped_calls_exclude = ["pymupdf"]
 [[tool.mypy.overrides]]
 module = ["sklearn.*"]
 ignore_missing_imports = true
-# scikit-learn liefert weder einen py.typed-Marker noch ein separates Stub-Paket (Stand
-# 1.9.1, geprüft). Ohne diese Ausnahme würde jede Importstelle einzeln als
-# "import-untyped" gemeldet, obwohl es keine Ursache im eigenen Code gibt, die sich
-# beheben ließe.
+# scikit-learn liefert keinen py.typed-Marker (Stand 1.9.1, geprüft). Das inoffizielle
+# Paket scikit-learn-stubs (0.0.3, seit August 2025 unverändert) bündelt Microsofts Stubs,
+# die älter sind als 1.9 – als Abhängigkeit nicht tragfähig. follow_untyped_imports statt
+# dieser Ausnahme ergab 8 no-untyped-call-Meldungen ohne Ursache im eigenen Code.
+# Folge der Ausnahme: sklearn-Objekte sind für mypy Any. Deshalb wird jeder Rückgabewert
+# aus sklearn an der Modulgrenze in einen eigenen Typ überführt (np.asarray mit dtype,
+# str je Vokabulareintrag; features/ngrams.py), damit kein Any weiterwandert.

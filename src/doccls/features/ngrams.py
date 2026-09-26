@@ -84,7 +84,7 @@ class NgramBlock:
         ``fit`` mehr als die Trainingstexte gesehen hat.
         """
         self._pruefe_angepasst()
-        return list(self._vectorizer.get_feature_names_out())
+        return [str(eintrag) for eintrag in self._vectorizer.get_feature_names_out()]
 
 
 def build_ngram_block(config: FeatureConfig) -> NgramBlock:
