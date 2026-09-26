@@ -23,8 +23,10 @@ def test_jede_menge_ist_nicht_leer() -> None:
 
 
 def test_die_mengen_ueberschneiden_sich_nicht() -> None:
-    ids = [set(f["document_id"]) for f in
-           (training_documents(), calibration_documents(), gold_documents())]
+    ids = [
+        set(f["document_id"])
+        for f in (training_documents(), calibration_documents(), gold_documents())
+    ]
     assert ids[0].isdisjoint(ids[1])
     assert ids[0].isdisjoint(ids[2])
     assert ids[1].isdisjoint(ids[2])
@@ -34,8 +36,10 @@ def test_keine_vorlage_liegt_in_zwei_mengen() -> None:
     """Schaerfer als die Dokument-Pruefung darueber: Zehn Varianten einer Vorlage sind
     praktisch dasselbe Dokument. Laegen sie auf beiden Seiten, waere jede Metrik geschoent
     (Konzept § 9.2)."""
-    vorlagen = [set(f["template_id"]) for f in
-                (training_documents(), calibration_documents(), gold_documents())]
+    vorlagen = [
+        set(f["template_id"])
+        for f in (training_documents(), calibration_documents(), gold_documents())
+    ]
     assert vorlagen[0].isdisjoint(vorlagen[1])
     assert vorlagen[0].isdisjoint(vorlagen[2])
     assert vorlagen[1].isdisjoint(vorlagen[2])
