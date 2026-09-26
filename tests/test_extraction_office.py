@@ -9,11 +9,11 @@ from pathlib import Path
 
 import docx
 import openpyxl
-import polars as pl
 import pymupdf
 import pytest
+from conftest import pfade_fuer_vorlage
 
-from doccls.config import GENERATED_DIR, RAW_DIR
+from doccls.config import RAW_DIR
 from doccls.extraction import extract
 from doccls.extraction.pdf import heading_by_font_size
 from doccls.models import Document, SegmentKind, normalize_text
@@ -46,18 +46,6 @@ def erste(ordner: str) -> Path:
     dateien = sorted((RAW_DIR / ordner).glob(f"*.{ordner}"))
     assert dateien, f"Keine Testdaten in {RAW_DIR / ordner}"
     return dateien[0]
-
-
-def pfade_fuer_vorlage(template_id: str) -> list[Path]:
-    """Alle Dateien einer Vorlage, über das Manifest gefunden – nicht über den Dateinamen.
-
-    Der ist seit der Schließung der Dateiname-Abkürzung neutral (``doc-0001.pdf``) und
-    verrät weder Klasse noch Vorlage mehr; ``template_id`` steht nur noch im Manifest.
-    """
-    manifest = pl.read_parquet(GENERATED_DIR / "manifest.parquet")
-    zeilen = manifest.filter(pl.col("template_id") == template_id).sort("source_path")
-    assert not zeilen.is_empty(), f"Keine Testdaten für Vorlage {template_id!r}"
-    return [RAW_DIR / pfad for pfad in zeilen["source_path"]]
 
 
 def test_pdf_ergibt_ein_segment_je_seite() -> None:
