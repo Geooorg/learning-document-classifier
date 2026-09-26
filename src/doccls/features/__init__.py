@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from doccls.config import PROJECT_ROOT
 from doccls.features.structural import STRUCTURAL_NAMES, structural_features
-from doccls.features.text import document_text_ohne_layout
+from doccls.features.text import document_text
 from doccls.models import Document, Segment, SegmentKind
 
 if TYPE_CHECKING:
@@ -161,22 +161,38 @@ def build_matrix(
 
     Reihenfolge je Dokument (die Reihenfolge ist der kritische Teil dieser Funktion, nicht
     die Formel dahinter): Segmente nach ``index`` sortieren → ``document_text`` →
-    ``strip_boilerplate`` über die so entstandenen Dokumenttexte → ``document_vector``
-    (Mittelwert ‖ Kopf) → ``ngram_block.transform`` → ``structural_features`` →
-    waagerecht aneinanderhaengen.
+    ``document_vector`` (Mittelwert ‖ Kopf) → ``ngram_block.transform`` →
+    ``structural_features`` → waagerecht aneinanderhaengen.
 
     Der n-Gramm-Block wird **ausschliesslich auf den Texten der Dokumente in
     ``training_document_ids`` angepasst** und danach auf alle Dokumente angewandt. Wer ihn
     auf allen Dokumenten (also auch dem Gold-Set) anpasst, gibt dem Modell dessen
     Wortstatistik mit – die gemessenen Zahlen sehen dann besser aus, als sie sind. Das ist
     der klassische stille Fehler dieser Art von Pipeline, und hier – wo Training und Gold
-    getrennt vorliegen – ist er zum ersten Mal prüfbar.
+    getrennt vorliegen – ist er zum ersten Mal prüfbar. Deshalb prueft diese Funktion
+    selbst, dass ``training_document_ids`` goldfrei ist (Konzept § 9.2) – sie ist es, die
+    trainiert, ein Kommentar beim Aufrufer waere keine Zusicherung.
 
     Das E5/BGE-M3-Praefix wird nicht hier entschieden: ``praefix_fuer(embedder)`` waehlt
     es (Aufgabe 5), diese Funktion benutzt nur, was dabei herauskommt.
     """
     from doccls.features.embedding import document_vector, praefix_fuer
     from doccls.features.ngrams import build_ngram_block
+    from doccls.splits import gold_documents
+
+    # Gold-Schutz hier statt nur beim Aufrufer: ``build_matrix`` ist die Funktion, die den
+    # n-Gramm-Block anpasst – das ist Training (Konzept § 9.2, global-constraints.md "im
+    # Code, nicht per Konvention"). ``scripts/build_features.py`` sicherte das bisher per
+    # Kommentar zu; ein Kommentar wird uebersehen, eine Ausnahme nicht.
+    goldene_trainingsdokumente = training_document_ids & set(
+        gold_documents()["document_id"].to_list()
+    )
+    if goldene_trainingsdokumente:
+        raise ValueError(
+            f"{len(goldene_trainingsdokumente)} Gold-Dokumente in training_document_ids: "
+            f"{sorted(goldene_trainingsdokumente)[:5]}. Das Gold-Set ist eingefroren "
+            "(Konzept § 9.2) – der n-Gramm-Block darf es nicht sehen."
+        )
 
     document_ids: list[str] = documents["document_id"].to_list()
     segmente_je_dokument = _segmente_gruppieren(segments)
@@ -184,12 +200,18 @@ def build_matrix(
         zeile["document_id"]: zeile for zeile in documents.iter_rows(named=True)
     }
 
-    # ``strip_boilerplate`` bekommt die Seiten EINES Dokuments, nicht die Texte vieler –
-    # siehe ``document_text_ohne_layout``. Korpusweit angewandt entfernte es Saetze, die in
-    # vielen Dokumenten vorkommen, und das kann Inhalt sein statt Layout.
-    texte = [
-        document_text_ohne_layout(segmente_je_dokument.get(doc_id, [])) for doc_id in document_ids
-    ]
+    # Kein strip_boilerplate hier: ``pipeline.py`` (Zeile ~116, ``_process``) strippt beim
+    # Einlesen bereits je Dokument ueber dessen Segmenttexte und verwirft leer gewordene
+    # Segmente. Ein zweiter Durchlauf saehe nur noch die schon bereinigte, kleinere
+    # Segmentmenge – und koennte einen Satz, den der erste Durchlauf bewusst behalten hat,
+    # lautlos doch noch entfernen: Steht ein Satz auf 4 von urspruenglich 10 Seiten (40 %,
+    # unter der 60-%-Schranke, bleibt beim Ingest stehen), und waren die restlichen 6
+    # Seiten reine Fusszeilenseiten (werden beim Ingest leer und damit verworfen), zeigt
+    # ein zweiter Durchlauf hier nur noch 4 Segmente – der Satz steht plaetzlich auf allen
+    # vieren (100 %) und wuerde als Layout entfernt, obwohl der erste Durchlauf ihn ueber
+    # die vollstaendigen 10 Seiten zu Recht als Inhalt eingestuft hat. Der zweite Lauf
+    # ueberstimmte damit still die Entscheidung des ersten.
+    texte = [document_text(segmente_je_dokument.get(doc_id, [])) for doc_id in document_ids]
 
     praefix = praefix_fuer(embedder)
     emb_bloecke = np.vstack(
@@ -293,6 +315,12 @@ def read_features(features_dir: Path, feature_version: str) -> FeatureMatrix:
     Wirft, wenn die verlangte Version nicht unter ``features_dir`` liegt: Ein Modell darf
     nie mit Merkmalen einer anderen Version weiterrechnen (Konzept § 6.4). Ohne diese
     Pruefung wuerde ein Versionswechsel stillschweigend die letzte bekannte Matrix liefern.
+
+    Massgeblich fuer den Pfad ist allein der Verzeichnisname – ``meta.json`` koennte davon
+    unbemerkt abweichen (halb geschrieben, von Hand veraendert). Deshalb wird ``meta.json``
+    hier zusaetzlich **gegen sich selbst und gegen die tatsaechliche Parquet-Breite**
+    geprueft: Ohne das liefert eine beschaedigte ``meta.json`` stillschweigend falsche
+    Blockgrenzen, und jeder Zugriff auf ``block_slices`` schneidet die falschen Spalten.
     """
     quelle = features_dir / feature_version
     meta_pfad = quelle / "meta.json"
@@ -304,14 +332,34 @@ def read_features(features_dir: Path, feature_version: str) -> FeatureMatrix:
         )
 
     meta = json.loads(meta_pfad.read_text(encoding="utf-8"))
+    if meta["feature_version"] != feature_version:
+        raise ValueError(
+            f"meta.json unter {quelle} nennt feature_version={meta['feature_version']!r}, "
+            f"verlangt war {feature_version!r} – die Datei ist beschaedigt oder von Hand "
+            "veraendert worden."
+        )
+
     tabelle = pl.read_parquet(matrix_pfad)
+    X = tabelle["vector"].to_numpy().astype(np.float32)
+    if meta["width"] != X.shape[1]:
+        raise ValueError(
+            f"meta.json unter {quelle} nennt width={meta['width']}, die Parquet-Datei hat "
+            f"aber {X.shape[1]} Spalten – die Blockgrenzen in meta.json waeren falsch."
+        )
+
     block_slices = {
         name: slice(grenze[0], grenze[1]) for name, grenze in meta["block_slices"].items()
     }
+    grenze_ende = max((bereich.stop for bereich in block_slices.values()), default=0)
+    if grenze_ende != X.shape[1]:
+        raise ValueError(
+            f"Blockgrenzen in meta.json unter {quelle} reichen bis Spalte {grenze_ende}, "
+            f"die Matrix hat aber {X.shape[1]} Spalten – meta.json ist inkonsistent."
+        )
 
     return FeatureMatrix(
         document_ids=tabelle["document_id"].to_list(),
-        X=tabelle["vector"].to_numpy().astype(np.float32),
+        X=X,
         feature_version=meta["feature_version"],
         block_slices=block_slices,
         embedder=meta["embedder"],
