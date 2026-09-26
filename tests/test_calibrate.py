@@ -16,7 +16,13 @@ import numpy.typing as npt
 import pytest
 from scipy.special import softmax as _scipy_softmax
 
-from doccls.calibrate import apply_temperature, expected_calibration_error, fit_temperature
+from doccls.calibrate import (
+    T_OBERGRENZE,
+    T_UNTERGRENZE,
+    apply_temperature,
+    expected_calibration_error,
+    fit_temperature,
+)
 from doccls.splits import calibration_documents, training_documents
 
 KLASSEN = ["a", "b", "c", "d"]
@@ -67,6 +73,27 @@ def _unterhebliche_vorhersagen(
 ) -> tuple[npt.NDArray[np.float64], list[str], list[str]]:
     """Der seltene Gegenfall: ein zu zaghaftes Modell, gesuchte Temperatur 0,35."""
     return _vorhersagen(seed, schaerfe=0.35)
+
+
+def _perfekt_trennbare_vorhersagen() -> tuple[npt.NDArray[np.float64], list[str], list[str]]:
+    """Der entartete Fall, in dem die Kalibriermenge kein ``T`` hergibt.
+
+    Jede Zeile trifft ihre wahre Klasse mit einem festen, maessigen Abstand von 0,5 –
+    perfekt trennbar. Die NLL faellt dann monoton, je kleiner ``T`` wird (gemessen:
+    ``T=0,5 → 0,743668``, ``0,1 → 0,020012``, ``0,05 → 0,000136``, ``0,005 → -0,000000``),
+    das Minimum liegt also ausserhalb des Suchbereichs. Das ist derselbe Verlauf, den der
+    Pruefer auf den echten centroid-Scores gemessen hat (``T = 0,050007``).
+    """
+    abstand = 0.5
+    block = np.eye(len(KLASSEN), dtype=np.float64) * abstand
+    return np.tile(block, (5, 1)), KLASSEN * 5, KLASSEN
+
+
+def _masslos_ueberhebliche_vorhersagen(
+    seed: int,
+) -> tuple[npt.NDArray[np.float64], list[str], list[str]]:
+    """Gegenstueck am oberen Rand: die gesuchte Temperatur 50 liegt jenseits von 20."""
+    return _vorhersagen(seed, schaerfe=50.0)
 
 
 def test_temperatur_aendert_keine_einzige_entscheidung() -> None:
@@ -139,7 +166,17 @@ def test_unterhebliches_modell_bekommt_temperatur_unter_eins() -> None:
 
 def test_ece_ist_null_bei_perfekter_eichung() -> None:
     """Bindet die Formel: Sagt das Modell durchgehend 1,0 und trifft immer, ist der
-    Eichfehler null. Eine falsch normierte Gewichtung faellt hier auf."""
+    Eichfehler null.
+
+    Die urspruengliche Planvorgabe behauptete hier, eine falsch normierte Gewichtung
+    falle auf. Das stimmt nicht und wurde nachgemessen: Alle Luecken sind 0, und jede
+    Gewichtung eines Nullvektors ergibt wieder 0 – keine Gewichtungsmutation faellt hier
+    auf. Gebunden ist die Gewichtung allein in
+    ``test_ece_gewichtet_nach_korbbesetzung_und_zaehlt_leere_koerbe_nicht``. Was dieser
+    Test bindet, ist der eine Pol: Eine Umsetzung mit konstanter Rueckgabe ungleich 0
+    faellt durch (das Gegenstueck dazu ist
+    ``test_ece_ist_gross_bei_voller_ueberheblichkeit``).
+    """
     proba = np.array([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
     assert expected_calibration_error(proba, ["a", "a", "b"], ["a", "b"]) == 0.0
 
@@ -166,6 +203,24 @@ def test_ece_gewichtet_nach_korbbesetzung_und_zaehlt_leere_koerbe_nicht() -> Non
     assert expected_calibration_error(proba, y, ["a", "b"]) == pytest.approx(0.15)
 
 
+def test_ece_haengt_an_der_uebergebenen_korbzahl() -> None:
+    """Bindet ``bins``: Ohne diesen Test ist der Parameter ungeprueft, und eine Umsetzung
+    mit fest verdrahteten 10 Koerben besteht die ganze Suite.
+
+    Dieselben zehn Vorhersagen, zwei Korbzahlen, zwei nachgerechnete Werte. Bei
+    ``bins=1`` liegt alles in einem Korb: mittlere Konfidenz
+    ``(8*0,95 + 2*0,55)/10 = 0,87``, Trefferquote ``0,8``, Luecke ``0,07``. Bei
+    ``bins=10`` trennen sich die beiden Gruppen und die Luecken heben sich nicht mehr
+    gegenseitig auf: ``0,8*0,05 + 0,2*0,55 = 0,15``. Die Korbzahl ist damit nicht
+    kosmetisch – sie entscheidet, ob eine zu hohe und eine zu niedrige Konfidenz
+    gegeneinander aufgerechnet werden.
+    """
+    proba = np.array([[0.95, 0.05]] * 8 + [[0.55, 0.45]] * 2)
+    y = ["a"] * 8 + ["b"] * 2
+    assert expected_calibration_error(proba, y, ["a", "b"], bins=1) == pytest.approx(0.07)
+    assert expected_calibration_error(proba, y, ["a", "b"], bins=10) == pytest.approx(0.15)
+
+
 def test_temperatur_null_oder_negativ_wird_abgelehnt() -> None:
     """Waechter mit eigenem Test: Eine negative Temperatur dreht die Rangfolge um und
     verwandelt die sicherste Klasse in die unsicherste – der einzige Weg, auf dem
@@ -177,12 +232,86 @@ def test_temperatur_null_oder_negativ_wird_abgelehnt() -> None:
             apply_temperature(logits, T)
 
 
+def test_fit_temperature_lehnt_randtreffer_an_der_untergrenze_ab() -> None:
+    """Waechter mit eigenem Test: Ein ``T`` vom Rand des Suchbereichs ist keine Eichung.
+
+    Auf perfekt trennbaren Scores faellt die NLL monoton bis zur Untergrenze; die Suche
+    gibt dann brav ``0,0500...`` zurueck, eine Zahl, die aussieht wie ein Ergebnis.
+    Genau das ist auf dem echten Bestand passiert (centroid: ``T = 0,050007``). Ohne
+    diesen Waechter koennte Aufgabe 16 einen Randtreffer nicht von einer echten
+    Anpassung unterscheiden.
+    """
+    logits, y, klassen = _perfekt_trennbare_vorhersagen()
+    with pytest.raises(ValueError, match="Untergrenze"):
+        fit_temperature(logits, y, klassen)
+
+
+def test_fit_temperature_lehnt_randtreffer_an_der_obergrenze_ab() -> None:
+    """Dieselbe Zusicherung am anderen Ende – sonst bliebe die halbe Bedingung ungeprueft.
+
+    Ein Modell mit der wahren Temperatur 50 liegt jenseits von ``T_OBERGRENZE = 20``.
+    Die Suche laeuft in die obere Schranke (gemessen: ``19,999994``), und auch dieser
+    Wert ist keine Eichung, sondern die Aussage, dass der Suchbereich nicht passt.
+    """
+    logits, y, klassen = _masslos_ueberhebliche_vorhersagen(seed=3)
+    with pytest.raises(ValueError, match="Obergrenze"):
+        fit_temperature(logits, y, klassen)
+
+
+def test_fit_temperature_laesst_gewoehnliche_anpassungen_durch() -> None:
+    """Gegenprobe zum Waechter: Er darf nur den Rand treffen, nicht das Feld.
+
+    Alle drei Regime aus dieser Suite – ueberheblich (wahres T = 3), gut geeicht (1) und
+    unterheblich (0,35) – muessen durchgehen. Die unterhebliche Anpassung landet bei
+    ``0,4017`` und damit rund beim Achtfachen der Untergrenze: Ein zu grosszuegig
+    gefasster Rand (etwa ``T <= T_UNTERGRENZE * 10``) wuerde sie faelschlich ablehnen
+    und faellt hier auf.
+    """
+    for vorhersagen in (
+        _ueberhebliche_vorhersagen(seed=3),
+        _gut_geeichte_vorhersagen(seed=3),
+        _unterhebliche_vorhersagen(seed=3),
+    ):
+        logits, y, klassen = vorhersagen
+        T = fit_temperature(logits, y, klassen)
+        assert T_UNTERGRENZE < T < T_OBERGRENZE
+
+
 def test_ece_lehnt_nicht_normierte_zeilen_ab() -> None:
     """Waechter mit eigenem Test: Wer versehentlich Logits statt Wahrscheinlichkeiten
     uebergibt, bekaeme sonst eine Zahl, die wie ein Eichfehler aussieht."""
     logits, y, klassen = _ueberhebliche_vorhersagen(seed=3)
     with pytest.raises(ValueError, match="Zeilensumme"):
         expected_calibration_error(logits, y, klassen)
+
+
+def test_ece_bindet_die_schwelle_der_zeilensummenpruefung() -> None:
+    """Bindet den **Abstand** der Schwelle zur echten Verteilung, nicht bloss ihr Dasein.
+
+    Der Test darueber schiebt rohe Logits hinein, deren Zeilensummen weit danebenliegen.
+    Gemessen: Setzt man ``atol`` auf 0,5, 1, 2, 5 oder 10, bleibt die Suite gruen – die
+    Schwelle duerfte praktisch alles sein. Hier steht sie zwischen zwei nahe beieinander
+    liegenden Faellen: Eine Zeilensumme von 1,02 (0,51 + 0,51) ist ein echter
+    Normierungsfehler und muss auffallen; eine von 1,00005 ist Gleitkommarauschen, wie es
+    der ``float32``-Rueckgabetyp von ``apply_temperature`` erzeugt, und muss durchgehen.
+    Eine gelockerte Schwelle macht die erste Haelfte rot, eine verschaerfte die zweite.
+    """
+    with pytest.raises(ValueError, match="Zeilensumme"):
+        expected_calibration_error(np.array([[0.51, 0.51]]), ["a"], ["a", "b"])
+    expected_calibration_error(np.array([[0.5, 0.50005]]), ["b"], ["a", "b"])
+
+
+def test_ece_lehnt_wahrscheinlichkeiten_ausserhalb_null_bis_eins_ab() -> None:
+    """Waechter mit eigenem Test: Werte ausserhalb ``[0, 1]`` werden abgelehnt, nicht
+    gekappt.
+
+    Gemessen am vorherigen Stand: ``proba=[[1.5, -0.5]]`` mit ``y=["a"]`` ergab ``0.0``.
+    Die Zeilensumme ist exakt 1, der Waechter darueber greift also nicht, und ein
+    ``np.clip`` verbuchte die Konfidenz 1,5 stillschweigend als 1,0 – gemeldet wurde
+    perfekte Eichung fuer eine Eingabe, die gar keine Wahrscheinlichkeiten enthaelt.
+    """
+    with pytest.raises(ValueError, match="zwischen 0 und 1"):
+        expected_calibration_error(np.array([[1.5, -0.5]]), ["a"], ["a", "b"])
 
 
 def test_ece_lehnt_unpassende_korbzahl_ab() -> None:

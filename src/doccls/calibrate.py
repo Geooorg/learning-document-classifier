@@ -18,7 +18,12 @@ die gemessene Senkung des Eichfehlers.
 **Numerik.** Die NLL wird über ``scipy.special.log_softmax`` auf ``logits / T``
 gerechnet, nicht über ``log(softmax(...))``: Letzteres läuft bei großen Logits und
 kleinem ``T`` in einen Unterlauf und liefert ``-inf``, wo ein endlicher, sehr negativer
-Wert stünde – die Suche bekäme dann ein Plateau statt eines Gefälles zu sehen.
+Wert stünde. Mehr als das leistet ``log_softmax`` nicht. Ein Plateau verhindert es
+**nicht** – nachgemessen auf trennbaren Logits ergibt die NLL ``-0,000e+00`` bei
+``T = 0,05``, ``0,1`` und ``0,15`` und erst ab ``0,2`` wieder einen von null
+unterscheidbaren Wert (``2,09e-16``). Wo die Kalibriermenge kein ``T`` hergibt, bleibt
+die Zielfunktion flach, ganz gleich wie stabil sie gerechnet ist; abgefangen wird das
+nicht hier, sondern vom Randwächter in :func:`fit_temperature`.
 
 **Bewusst nicht gebaut** (Konzept § 7.3 nennt sie als Alternativen): Vector Scaling und
 isotone Regression. Der Bedarf ist eine Messfrage – erst wenn Aufgabe 16 den ECE über
@@ -44,6 +49,12 @@ from scipy.special import log_softmax, softmax
 #: sein, und eine Suche, die erst bei 1,0 beginnt, meldete dann fälschlich "gut geeicht".
 T_UNTERGRENZE = 0.05
 T_OBERGRENZE = 20.0
+
+#: Wie nah an einer Schranke ein Suchergebnis als Randtreffer gilt – relativ, damit
+#: dieselbe Zahl für beide Schranken taugt. Die beschränkte Suche läuft nie exakt auf die
+#: Schranke, sondern bis auf ihre eigene Toleranz heran (gemessen: 0,050007 statt 0,05),
+#: ein Vergleich auf Gleichheit ginge also immer ins Leere.
+RAND_TOLERANZ = 0.01
 
 Zahlenfeld = npt.NDArray[np.float32] | npt.NDArray[np.float64]
 
@@ -112,6 +123,18 @@ def fit_temperature(
 
     ``logits`` sind Rohwerte je Klasse (``TrainedModel.decision_scores``), keine
     Wahrscheinlichkeiten.
+
+    **Ein Randtreffer wird geworfen, nicht zurückgegeben.** Liegt das gefundene ``T`` auf
+    einer der beiden Schranken, hat die Suche kein Minimum gefunden, sondern ist gegen den
+    Rand ihres Bereichs gelaufen: Das Minimum liegt außerhalb. Auf dem echten Bestand ist
+    das aufgetreten (centroid: ``T = 0,050007`` bei einer NLL, die bis unter die Schranke
+    monoton fällt). Eine Temperatur vom Rand ist keine Eichung, sondern die Aussage, dass
+    diese Kalibriermenge keine hergibt – weil die Scores perfekt trennbar oder entartet
+    sind. Diese Aussage muss nach oben durchschlagen. Als ``float`` zurückgegeben wäre sie
+    von einer echten Anpassung nicht mehr zu unterscheiden: Sie ist eine Zahl im erlaubten
+    Bereich und jeder Aufrufer – ``apply_temperature``, die Auswertung in Aufgabe 16 –
+    rechnete stillschweigend mit ihr weiter. Deshalb ``ValueError`` und keine Warnung; eine
+    Warnung kann überhört werden, ein Rückgabewert kann nicht befragt werden.
     """
     werte = _als_float64(logits)
     _pruefe_form(werte, y_true, classes)
@@ -127,7 +150,22 @@ def fit_temperature(
         bounds=(T_UNTERGRENZE, T_OBERGRENZE),
         method="bounded",
     )
-    return float(ergebnis.x)
+    temperatur = float(ergebnis.x)
+    if temperatur <= T_UNTERGRENZE * (1.0 + RAND_TOLERANZ):
+        raise ValueError(
+            f"Die Suche ist in die Untergrenze {T_UNTERGRENZE} gelaufen (gefunden: "
+            f"{temperatur:.6f}). Das Minimum der NLL liegt darunter, also ausserhalb des "
+            "Suchbereichs: Die Scores sind perfekt trennbar oder entartet, und diese "
+            "Kalibriermenge bestimmt kein T. Ein Randwert waere keine Eichung."
+        )
+    if temperatur >= T_OBERGRENZE * (1.0 - RAND_TOLERANZ):
+        raise ValueError(
+            f"Die Suche ist in die Obergrenze {T_OBERGRENZE} gelaufen (gefunden: "
+            f"{temperatur:.6f}). Das Minimum der NLL liegt darueber, also ausserhalb des "
+            "Suchbereichs: Die Scores sind entartet oder masslos ueberheblich, und diese "
+            "Kalibriermenge bestimmt kein T. Ein Randwert waere keine Eichung."
+        )
+    return temperatur
 
 
 def apply_temperature(logits: Zahlenfeld, temperature: float) -> npt.NDArray[np.float32]:
@@ -167,6 +205,12 @@ def expected_calibration_error(
 
     0,0 heißt: Wo das Modell 0,8 sagt, trifft es in 0,8 der Fälle. Nahe 1,0 heißt: volle
     Sicherheit, durchgehend falsch.
+
+    Werte außerhalb ``[0, 1]`` werden **abgelehnt, nicht gekappt**. Ein ``np.clip`` stand
+    hier und verbuchte eine Konfidenz von 1,5 stillschweigend als 1,0: ``[[1.5, -0.5]]``
+    hat Zeilensumme 1, kam am Wächter darüber vorbei und ergab den Eichfehler 0,0 –
+    perfekte Eichung, gemeldet für eine Eingabe, die keine Wahrscheinlichkeiten enthielt.
+    Kappen macht eine falsche Eingabe rechenbar, statt sie zu melden.
     """
     if bins < 1:
         raise ValueError(
@@ -182,9 +226,14 @@ def expected_calibration_error(
             f"Logits (gefunden: Summen von {zeilensummen.min():.4f} bis "
             f"{zeilensummen.max():.4f})."
         )
+    if werte.min() < 0.0 or werte.max() > 1.0:
+        raise ValueError(
+            "Jeder Wert muss zwischen 0 und 1 liegen - erwartet werden "
+            f"Wahrscheinlichkeiten (gefunden: {werte.min():.4f} bis {werte.max():.4f})."
+        )
     ziel = _klassenindex(y_true, classes)
 
-    konfidenz = np.clip(werte.max(axis=1), 0.0, 1.0)
+    konfidenz = werte.max(axis=1)
     treffer = (werte.argmax(axis=1) == ziel).astype(np.float64)
     # Der oberste Korb ist rechts geschlossen, damit eine Konfidenz von exakt 1,0 nicht
     # in einen elften Korb faellt.
