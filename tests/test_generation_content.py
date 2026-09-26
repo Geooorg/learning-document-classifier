@@ -89,6 +89,13 @@ def test_struktur_verraet_die_klasse_nicht(tmp_path: Path) -> None:
     PDF-Seiten, DOCX-Abschnitte und XLSX-Tabellenblätter je Variante aus dem geseedeten
     Zufall der Vorlage zufällig gruppiert, statt sie starr an der Blockzahl hängen zu
     lassen. Wer diese Schranke anhebt, lässt die Segmentzahl wieder zur Abkürzung werden.
+
+    Drei Zahlen, damit die Schranke nachvollziehbar bleibt: Boden 19,6 % (Format allein),
+    heute gemessen 29,8 %, historisch 61 %. Die Schranke liegt bei 38 % und nicht dicht
+    über dem Messwert – ein Test mit zwei Zehntel Prozentpunkten Luft reißt beim nächsten
+    harmlosen Eingriff an einer Vorlage und sagt dann nichts über die Abkürzung aus. Bei
+    38 % werden beide vorgeführten Rückfälle noch gefangen: Streuung ganz aus ergibt
+    62,5 %, Streuung nur in DOCX und XLSX aus ergibt 43,2 %.
     """
     korpus = build_corpus()
     merkmale: list[Hashable] = []
@@ -110,7 +117,7 @@ def test_struktur_verraet_die_klasse_nicht(tmp_path: Path) -> None:
         merkmale.append((fmt, sum(1 for text in texte if text)))
     klassen = [spec.class_key for spec in korpus]
     trefferquote = _bestmoeglicher_rater(merkmale, klassen)
-    assert trefferquote <= 0.30, (
+    assert trefferquote <= 0.38, (
         f"Struktur-Rater trifft {trefferquote:.1%} der Dokumente – (Format, Segmentzahl) "
         "verrät die Klasse"
     )
