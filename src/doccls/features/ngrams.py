@@ -37,8 +37,25 @@ class NgramBlock:
         self._angepasst = False
 
     def fit(self, texts: list[str]) -> None:
-        """Nur mit Trainingstexten aufrufen – siehe Moduldoc."""
+        """Nur mit Trainingstexten aufrufen – siehe Moduldoc.
+
+        Wirft, wenn die verlangte Dimensionszahl größer ist, als die Daten hergeben.
+        ``TruncatedSVD`` degradiert sonst **stillschweigend**: Bei 140 Trainingstexten und
+        ``svd_components: 256`` liefert ``transform`` 140 Spalten statt 256 – ohne Fehler,
+        ohne Warnung, während ``self.dimension`` weiter 256 behauptet. In der
+        Merkmalsmatrix (Aufgabe 9) schnitte das die Blöcke falsch, und keine Zahl sähe
+        verdächtig aus.
+        """
         matrix = self._vectorizer.fit_transform(texts)
+        moeglich = min(matrix.shape)
+        if self.dimension >= moeglich:
+            raise ValueError(
+                f"svd_components ist {self.dimension}, aber die Daten geben höchstens "
+                f"{moeglich - 1} her ({matrix.shape[0]} Texte, {matrix.shape[1]} n-Gramme). "
+                "TruncatedSVD würde stillschweigend weniger Spalten liefern, als "
+                "self.dimension behauptet. Entweder svd_components in config/features.yaml "
+                "senken oder die Trainingsmenge vergrößern."
+            )
         self._svd.fit(matrix)
         self._angepasst = True
 

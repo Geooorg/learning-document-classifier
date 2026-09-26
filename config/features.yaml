@@ -9,4 +9,9 @@ position_decay: 4.0       # Gewicht w_i = 1 / (1 + i/position_decay)
 ngram_min: 3              # Konzept § 6.2: Zeichen-n-Gramme 3 bis 5
 ngram_max: 5
 ngram_max_features: 50000
-svd_components: 256       # danach TruncatedSVD auf 256 Dimensionen
+svd_components: 128       # danach TruncatedSVD auf so viele Dimensionen
+# Konzept § 6.2 nennt 256. Die Trainingsmenge hat aber nur 140 Dokumente, und eine SVD
+# kann nicht mehr Komponenten liefern als Zeilen: sklearn gaebe dann stillschweigend 140
+# Spalten zurueck statt 256. Gemessen und belegt. 128 laesst Abstand nach oben. Waechst
+# die Trainingsmenge (Phase 3 bringt Labels dazu), darf der Wert wieder steigen -- fit()
+# wirft, wenn er zu gross ist, statt still zu degradieren.

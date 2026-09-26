@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from doccls.features import (
+    FeatureConfig,
     feature_version,
     load_feature_config,
     version_of_values,
@@ -21,20 +22,27 @@ def test_version_ist_stabil_ueber_laeufe() -> None:
 def test_jeder_parameter_veraendert_die_version() -> None:
     """Der eigentliche Zweck: Ändert sich irgendein Merkmalsparameter, muss die Version
     sich ändern. Ein Test, der nur EINEN Parameter prüft, übersieht genau den, der später
-    still geändert wird – deshalb werden hier alle durchgegangen."""
+    still geändert wird – deshalb werden **alle** Felder durchgegangen, aus
+    ``model_fields`` und nicht aus einer von Hand gepflegten Liste. Eine Liste würde ein
+    neu hinzugefügtes Feld übersehen, und genau das wäre der ungeprüfte Fall.
+
+    Der Änderungswert wird aus dem aktuellen abgeleitet, nicht fest gewählt: Eine feste
+    Zahl kollidiert früher oder später mit dem Vorgabewert, und der Test schlägt dann fehl,
+    ohne dass etwas kaputt wäre. Genau das ist passiert, als ``svd_components`` von 256 auf
+    128 gesenkt wurde.
+    """
     basis = load_feature_config()
     original = feature_version(basis)
+    werte = basis.model_dump()
     aenderungen: dict[str, object] = {
-        "embedder": "bge-m3",
-        "chunk_chars": 900,
-        "head_chars": 500,
-        "ngram_min": 2,
-        "ngram_max": 6,
-        "ngram_max_features": 20000,
-        "svd_components": 128,
-        "position_decay": 8.0,
+        feld: ("bge-m3" if wert == "e5" else "e5") if isinstance(wert, str) else (wert * 2 + 1)
+        for feld, wert in werte.items()
     }
+    assert set(aenderungen) == set(FeatureConfig.model_fields), (
+        "Nicht jedes Feld wird geprueft – ein neues Feld waere ungebunden"
+    )
     for feld, wert in aenderungen.items():
+        assert wert != werte[feld], f"Der Aenderungswert fuer {feld} ist der alte"
         geaendert = basis.model_copy(update={feld: wert})
         assert feature_version(geaendert) != original, (
             f"Feld {feld} aendert die Merkmale, aber nicht die Version – ein Modell wuerde "

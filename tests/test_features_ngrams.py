@@ -102,9 +102,68 @@ def test_ngram_bereich_kommt_aus_der_konfiguration_und_ist_nicht_fest_verdrahtet
     Vectorizer wuerde deshalb von keinem der Tests oben bemerkt. Hier wird der Bereich
     explizit auf einen abweichenden Wert gesetzt und ueber die tatsaechlichen
     Vokabularlaengen geprueft."""
-    schmal = block(ngram_min=3, ngram_max=5)
+
+    # svd_components muss unter der Textzahl bleiben, sonst wirft fit() – siehe
+    # test_mehr_komponenten_als_texte_wird_gemeldet. Geprueft wird hier ohnehin das
+    # Vokabular, nicht die SVD.
+    def schmaler_block(*, ngram_min: int, ngram_max: int) -> NgramBlock:
+        return build_ngram_block(
+            FeatureConfig(
+                svd_components=1,
+                ngram_max_features=2000,
+                ngram_min=ngram_min,
+                ngram_max=ngram_max,
+            )
+        )
+
+    schmal = schmaler_block(ngram_min=3, ngram_max=5)
     schmal.fit(LANGE_WOERTER)
-    breit = block(ngram_min=8, ngram_max=10)
+    breit = schmaler_block(ngram_min=8, ngram_max=10)
     breit.fit(LANGE_WOERTER)
     assert {len(eintrag) for eintrag in schmal.vokabular()} == {3, 4, 5}
     assert {len(eintrag) for eintrag in breit.vokabular()} == {8, 9, 10}
+
+
+def test_mehr_komponenten_als_texte_wird_gemeldet() -> None:
+    """``TruncatedSVD`` degradiert stillschweigend, wenn mehr Komponenten verlangt werden,
+    als die Daten hergeben.
+
+    Gemessen am echten Bestand: 140 Trainingstexte mit ``svd_components: 256`` ergaben
+    eine Matrix mit 140 Spalten – ohne Fehler, ohne Warnung, waehrend ``dimension``
+    weiter 256 behauptete. In der Merkmalsmatrix haette das die Bloecke falsch
+    geschnitten, und keine Zahl haette verdaechtig ausgesehen. Deshalb wirft ``fit``.
+    """
+    b = build_ngram_block(FeatureConfig(svd_components=50, ngram_max_features=2000))
+    with pytest.raises(ValueError, match="svd_components"):
+        b.fit(TRAININGSTEXTE)
+
+
+def test_transform_liefert_genau_so_viele_spalten_wie_dimension_behauptet() -> None:
+    """Die Zusicherung hinter dem Waechter oben: ``dimension`` darf nicht luegen.
+
+    Ohne diese Pruefung koennte ``transform`` weniger Spalten liefern als angekuendigt,
+    und erst die Blockaufteilung in Aufgabe 9 wuerde daran zerbrechen – oder schlimmer,
+    nicht zerbrechen und falsch schneiden.
+    """
+    b = block()
+    b.fit(TRAININGSTEXTE)
+    assert b.transform(TRAININGSTEXTE).shape[1] == b.dimension
+
+
+def test_vokabulargroesse_folgt_der_konfiguration() -> None:
+    """``ngram_max_features`` begrenzt das Vokabular. Ohne diesen Test ist der Parameter
+    ungebunden: Eine Umsetzung, die ihn ignoriert, ueberlebt alle anderen Pruefungen, weil
+    der Beispielkorpus mit 937 n-Grammen ohnehin unter der Grenze von 2000 bleibt.
+
+    Dann stuende in ``features.yaml`` ein Wert ohne Wirkung, waehrend die
+    ``feature_version`` sich bei seiner Aenderung sehr wohl aendert.
+    """
+    eng = build_ngram_block(FeatureConfig(svd_components=4, ngram_max_features=20))
+    eng.fit(TRAININGSTEXTE)
+    weit = block()
+    weit.fit(TRAININGSTEXTE)
+    assert len(eng.vokabular()) <= 20
+    assert len(weit.vokabular()) > 20, (
+        f"Der Beispielkorpus liefert nur {len(weit.vokabular())} n-Gramme – zu wenig, "
+        "um die Begrenzung ueberhaupt zu pruefen"
+    )
