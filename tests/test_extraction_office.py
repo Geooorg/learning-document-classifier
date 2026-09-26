@@ -208,6 +208,62 @@ def test_docx_tabelle_ohne_text_erzeugt_kein_segment() -> None:
     assert not any(s.locator.startswith("Tabelle") for s in segmente)
 
 
+def test_docx_ueberschrift_ohne_folgeabsatz_geht_nicht_verloren() -> None:
+    """K2 Nachweis a: Ein Dokumenttitel und eine Zwischenüberschrift, denen jeweils keine
+    eigenen Absätze folgen (der Zwischenüberschrift folgt direkt eine Tabelle), wurden
+    bisher stillschweigend verworfen – ``abschliessen`` schrieb nur bei nichtleerem
+    ``absaetze``. Zusätzlich muss die Tabelle die zuletzt gesehene Überschrift tragen statt
+    ``None``, sonst ist der Bezug zwischen Abschnitt und Tabelle gekappt.
+    """
+    quelle = docx.Document()
+    quelle.add_heading("Rechnung RE-2026-1234", level=1)
+    quelle.add_heading("Positionen", level=2)
+    tabelle = quelle.add_table(rows=2, cols=2)
+    tabelle.rows[0].cells[0].text = "Leistung"
+    tabelle.rows[0].cells[1].text = "Betrag"
+    tabelle.rows[1].cells[0].text = "Wartung"
+    tabelle.rows[1].cells[1].text = "750,00 EUR"
+    quelle.add_heading("Zahlung", level=2)
+    quelle.add_paragraph("Zahlbar bis 30.04.2026 ohne Abzug.")
+    puffer = io.BytesIO()
+    quelle.save(puffer)
+    daten = puffer.getvalue()
+    doc = dokument_aus_bytes(daten, "rechnung.docx", MEDIA_TYPE_DOCX)
+
+    segmente = extract(doc, daten)
+    ueberschriften = {s.heading for s in segmente if s.heading}
+    assert "Rechnung RE-2026-1234" in ueberschriften, "Dokumenttitel ohne Folgeabsatz verloren"
+    assert "Positionen" in ueberschriften, "Zwischenüberschrift ohne Folgeabsatz verloren"
+
+    tabellen_segment = next(s for s in segmente if s.locator == "Tabelle 1")
+    assert tabellen_segment.heading == "Positionen", (
+        "Der Bezug zwischen Überschrift und Tabelle ist gekappt"
+    )
+    assert "750,00" in tabellen_segment.text
+
+
+def test_docx_verschachtelte_tabelle_wird_gelesen() -> None:
+    """K2 Nachweis b: ``zelle.text`` sieht keine in eine Zelle eingebettete Tabelle. Eine
+    Rahmentabelle, deren einzige Zelle den eigentlichen Inhalt in einer verschachtelten
+    Tabelle trägt, lieferte bisher null Segmente – ein vollständiger, stiller Inhaltsverlust,
+    mit dem das Dokument dennoch als erfolgreich eingelesen gegolten hätte.
+    """
+    quelle = docx.Document()
+    quelle.add_heading("Rechnung", level=1)
+    aussen = quelle.add_table(rows=1, cols=1)
+    innen = aussen.rows[0].cells[0].add_table(rows=1, cols=2)
+    innen.rows[0].cells[0].text = "Summe"
+    innen.rows[0].cells[1].text = "12.000,00 EUR"
+    puffer = io.BytesIO()
+    quelle.save(puffer)
+    daten = puffer.getvalue()
+    doc = dokument_aus_bytes(daten, "verschachtelt.docx", MEDIA_TYPE_DOCX)
+
+    segmente = extract(doc, daten)
+    assert segmente, "Verschachtelte Tabelle darf nicht zu einem inhaltslosen Dokument führen"
+    assert any("12.000,00" in s.text for s in segmente), "Inhalt der verschachtelten Tabelle fehlt"
+
+
 def test_xlsx_liefert_ein_segment_je_blatt() -> None:
     doc, daten = dokument(erste("xlsx"), MEDIA_TYPE_XLSX)
     segmente = extract(doc, daten)

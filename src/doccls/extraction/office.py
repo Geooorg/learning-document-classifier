@@ -2,6 +2,9 @@
 
 DOCX: Ein Segment umfasst eine Überschrift und alles bis zur nächsten. Das hält
 zusammenhängende Gedanken beieinander und gibt dem Segment eine sprechende Fundstelle.
+Absätze und Tabellen werden in der tatsächlichen Reihenfolge des Dokuments durchlaufen
+(``iter_inner_content``), nicht getrennt in zwei Durchläufen – nur so lässt sich einer
+Tabelle die davorstehende Überschrift zuordnen.
 
 XLSX: Ein Blatt wird ein Segment. Eine Tabellenzeile wird als ``Spalte: Wert``
 geschrieben – zerfiele sie in einzelne Zellen, verlöre man den Bezug zwischen Position,
@@ -12,11 +15,35 @@ import io
 
 import docx
 import openpyxl
+from docx.table import _Cell
+from docx.text.paragraph import Paragraph
 
 from doccls.models import Document, Segment, SegmentKind, normalize_text
 
 MIN_HEADER_CELLS = 2
 """Ab so vielen gefüllten Zellen gilt die erste Zeile eines Blattes als Kopfzeile."""
+
+
+def _zellentext(zelle: _Cell) -> str:
+    """Text einer Zelle einschließlich darin verschachtelter Tabellen.
+
+    ``zelle.text`` sieht nur die eigenen Absätze einer Zelle; eine in die Zelle
+    eingebettete Tabelle – etwa eine Positionsliste innerhalb einer äußeren Rahmentabelle –
+    bliebe sonst vollständig unsichtbar. ``iter_inner_content`` läuft rekursiv über
+    ``_Cell``, deshalb genügt der Aufruf hier für beliebig tief verschachtelte Tabellen.
+    """
+    teile: list[str] = []
+    for inhalt in zelle.iter_inner_content():
+        if isinstance(inhalt, Paragraph):
+            text = inhalt.text.strip()
+            if text:
+                teile.append(text)
+        else:
+            for zeile in inhalt.rows:
+                zeilentext = " | ".join(_zellentext(z) for z in zeile.cells)
+                if zeilentext.strip(" |"):
+                    teile.append(zeilentext)
+    return " ".join(teile)
 
 
 def extract_docx(document: Document, data: bytes) -> list[Segment]:
@@ -26,7 +53,20 @@ def extract_docx(document: Document, data: bytes) -> list[Segment]:
     absaetze: list[str] = []
 
     def abschliessen() -> None:
-        text = normalize_text(" ".join(absaetze))
+        """Segment aus den bisher gesammelten Absätzen der aktuellen Überschrift schließen.
+
+        Eine Überschrift ohne eigenen Folgeabsatz bekommt hier trotzdem ein Segment – mit
+        sich selbst als Text, statt kommentarlos zu verschwinden. Ein Dokumenttitel, dem
+        sofort die nächste Überschrift oder eine Tabelle folgt, ist im echten Bestand der
+        Normalfall (Rechnungskopf, Abschnittsüberschrift vor einer Positionstabelle).
+        Die Alternative – die Überschrift an das nächstfolgende Segment „weiterreichen“ –
+        wurde verworfen: Folgen zwei Überschriften direkt aufeinander (Titel, dann
+        Unterabschnitt), gäbe es keinen eindeutigen Empfänger, ohne Überschriften
+        ineinander zu verschachteln oder eine von ihnen doch wieder zu verwerfen. Ein
+        eigenes Segment verliert nie Information. Die Zuordnung Überschrift → Tabelle wird
+        unabhängig davon beim Antreffen der Tabelle vorgenommen (siehe unten).
+        """
+        text = normalize_text(" ".join(absaetze)) if absaetze else (ueberschrift or "")
         if text:
             segmente.append(
                 Segment.create(
@@ -38,35 +78,38 @@ def extract_docx(document: Document, data: bytes) -> list[Segment]:
                     text=text,
                 )
             )
+        absaetze.clear()
 
-    for absatz in quelle.paragraphs:
-        text = absatz.text.strip()
-        if not text:
-            continue
-        stil = absatz.style.name if absatz.style is not None else None
-        if stil is not None and stil.startswith("Heading"):
-            abschliessen()
-            ueberschrift, absaetze = normalize_text(text), []
+    tabellennummer = 0
+    for inhalt in quelle.iter_inner_content():
+        if isinstance(inhalt, Paragraph):
+            text = inhalt.text.strip()
+            if not text:
+                continue
+            stil = inhalt.style.name if inhalt.style is not None else None
+            if stil is not None and stil.startswith("Heading"):
+                abschliessen()
+                ueberschrift, absaetze = normalize_text(text), []
+            else:
+                absaetze.append(text)
         else:
-            absaetze.append(text)
-    abschliessen()
-
-    for nummer, tabelle in enumerate(quelle.tables, start=1):
-        zellen = [[zelle.text.strip() for zelle in zeile.cells] for zeile in tabelle.rows]
-        if not any(zelle for zeile in zellen for zelle in zeile):
-            continue  # Layout-Tabelle ohne Inhalt – "" | "" ergäbe sonst nur Trennzeichen.
-        text = normalize_text(" ".join(" | ".join(zeile) for zeile in zellen))
-        if text:
-            segmente.append(
-                Segment.create(
-                    document=document,
-                    index=len(segmente),
-                    kind=SegmentKind.ABSCHNITT,
-                    locator=f"Tabelle {nummer}",
-                    heading=None,
-                    text=text,
+            tabellennummer += 1
+            zellen = [[_zellentext(zelle) for zelle in zeile.cells] for zeile in inhalt.rows]
+            if not any(zelle for zeile in zellen for zelle in zeile):
+                continue  # Layout-Tabelle ohne Inhalt – "" | "" ergäbe sonst nur Trennzeichen.
+            tabellentext = normalize_text(" ".join(" | ".join(zeile) for zeile in zellen))
+            if tabellentext:
+                segmente.append(
+                    Segment.create(
+                        document=document,
+                        index=len(segmente),
+                        kind=SegmentKind.ABSCHNITT,
+                        locator=f"Tabelle {tabellennummer}",
+                        heading=ueberschrift,
+                        text=tabellentext,
+                    )
                 )
-            )
+    abschliessen()
     return segmente
 
 

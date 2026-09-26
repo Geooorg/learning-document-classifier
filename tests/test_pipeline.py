@@ -4,6 +4,7 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
+import docx
 import polars as pl
 import pytest
 
@@ -208,6 +209,25 @@ def test_teilgescanntes_pdf_wird_als_ocr_beduerftig_markiert(tmp_path: Path) -> 
         "Ein Segment auf zehn Seiten (nur die getippte Seite) darf nicht als "
         "vollwertiges Textdokument durchgehen"
     )
+
+
+def test_dokument_ohne_segmente_wird_als_leer_gemeldet(tmp_path: Path) -> None:
+    """K2 Teil 3: Ein lesbares Dokument ohne ein einziges Segment ist kein Fehlschlag
+    (``failed`` ist für unlesbare Dateien reserviert), aber auch kein brauchbarer Beitrag
+    zur späteren Klassifizierung. Ohne eigenes Feld fiele so ein Dokument nur bei
+    manueller Durchsicht der Segmenttabelle auf, obwohl es in ``documents`` als
+    erfolgreich eingelesen geführt wird – genau der Fehlertyp, der sich durch dieses
+    Projekt zieht: Inhalt verschwindet, ohne dass eine Zahl auffällig aussieht.
+    """
+    roh = tmp_path / "raw"
+    roh.mkdir(parents=True)
+    leer = docx.Document()
+    leer.save(str(roh / "leer.docx"))
+
+    ergebnis = ingest(roh, tmp_path / "parquet")
+    assert ergebnis.failed == []
+    assert ergebnis.documents == 1
+    assert ergebnis.empty == ["leer.docx"]
 
 
 def test_kein_erzeugtes_pdf_gilt_als_ocr_beduerftig() -> None:

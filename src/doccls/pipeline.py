@@ -41,6 +41,12 @@ class IngestResult:
     attachments: int = 0
     failed: list[str] = field(default_factory=list)
     """Dateien, deren Format nicht unterstützt wird oder die nicht lesbar waren."""
+    empty: list[str] = field(default_factory=list)
+    """Dokumente, die lesbar waren, aber kein einziges Segment ergaben. Kein Fehler –
+    ``failed`` bleibt für tatsächlich unlesbare Dateien reserviert –, aber ohne Segment ist
+    ein Dokument für die spätere Klassifizierung nutzlos. Ohne dieses Feld fiele ein solches
+    Dokument nur bei manueller Durchsicht der Segmenttabelle auf, obwohl es in ``documents``
+    als erfolgreich eingelesen geführt wird."""
 
 
 def read_table(parquet_dir: Path, name: str) -> pl.DataFrame:
@@ -118,6 +124,8 @@ def _process(
     known.add(dokument.document_id)
     result.documents += 1
     result.segments += len(segmente)
+    if not segmente:
+        result.empty.append(source_path)
 
     dokumente, alle_segmente = [dokument], list(segmente)
     for anhang in anhaenge:
