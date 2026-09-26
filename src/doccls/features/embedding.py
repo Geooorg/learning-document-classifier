@@ -10,13 +10,16 @@ Vorhersage vergessen, driften die Vektoren auseinander – und die Zahlen sehen 
 plausibel aus.
 """
 
+import json
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import numpy.typing as npt
 
-from doccls.config import E5_MODEL_NAME
+from doccls.config import BGE_M3_MODEL_NAME, E5_MODEL_NAME, OLLAMA_URL
 from doccls.features import FeatureConfig
 from doccls.features.text import chunks, head_text, position_weights
 
@@ -101,3 +104,56 @@ def _geraet() -> str:
     import torch
 
     return "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+class BgeM3Embedder:
+    """``bge-m3`` über einen lokal laufenden Ollama-Dienst.
+
+    1024 Dimensionen, 8192 Token Kontext, **keine Präfixe** (Konzept Anhang B). Der
+    größere Kontext heißt: Die meisten Dokumente passen in einen einzigen Chunk. Das ist
+    kein Freifahrtschein, die Chunk-Logik zu umgehen – sie bleibt dieselbe, damit die
+    beiden Umsetzungen in Aufgabe 15 unter gleichen Bedingungen verglichen werden.
+    """
+
+    name = "bge-m3"
+    dimension = 1024
+
+    def __init__(self, url: str = OLLAMA_URL, model: str = BGE_M3_MODEL_NAME) -> None:
+        self._url = url.rstrip("/")
+        self._model = model
+
+    def embed(self, texts: list[str]) -> Vektoren:
+        rumpf = json.dumps({"model": self._model, "input": texts}).encode("utf-8")
+        anfrage = urllib.request.Request(
+            f"{self._url}/api/embed",
+            data=rumpf,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(anfrage, timeout=120) as antwort:
+                daten = json.loads(antwort.read())
+        except (urllib.error.URLError, OSError) as fehler:
+            raise RuntimeError(
+                f"Ollama unter {self._url} nicht erreichbar: {fehler}. "
+                "Ein Verbindungsfehler darf nicht als leerer Vektor durchgehen – das "
+                "Modell wuerde sonst auf Nullen trainieren."
+            ) from fehler
+        return np.asarray(daten["embeddings"], dtype=np.float32)
+
+
+def make_embedder(config: FeatureConfig) -> Embedder:
+    """Den in ``features.yaml`` gewählten Embedder bauen.
+
+    Die Wahl geht über ``feature_version`` in die Merkmale ein; sie darf deshalb nirgends
+    im Code fest verdrahtet sein.
+    """
+    match config.embedder:
+        case "e5":
+            return E5Embedder()
+        case "bge-m3":
+            return BgeM3Embedder()
+
+
+def praefix_fuer(embedder: Embedder) -> Callable[[str], str]:
+    """Das Präfix gehört zum Modell, nicht zur Aufrufstelle."""
+    return e5_prefix if embedder.name == "e5" else ohne_praefix

@@ -2,9 +2,17 @@
 
 import numpy as np
 import numpy.typing as npt
+import pytest
 
+from doccls.config import OLLAMA_URL
 from doccls.features import FeatureConfig
-from doccls.features.embedding import E5Embedder, document_vector, e5_prefix
+from doccls.features.embedding import (
+    BgeM3Embedder,
+    E5Embedder,
+    document_vector,
+    e5_prefix,
+    make_embedder,
+)
 
 
 class FakeEmbedder:
@@ -123,3 +131,58 @@ def test_e5_liefert_die_zugesicherte_dimension() -> None:
     embedder = E5Embedder()
     assert embedder.dimension == 768
     assert embedder.embed(["passage: test"]).shape == (1, 768)
+
+
+def ollama_laeuft() -> bool:
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=2):
+            return True
+    except urllib.error.URLError, OSError:
+        return False
+
+
+def test_make_embedder_folgt_der_konfiguration() -> None:
+    """Die Wahl steht in features.yaml und geht in die feature_version ein – sie darf
+    nirgends im Code fest verdrahtet sein."""
+    assert make_embedder(FeatureConfig(embedder="e5")).name == "e5"
+    assert make_embedder(FeatureConfig(embedder="bge-m3")).name == "bge-m3"
+
+
+@pytest.mark.skipif(not ollama_laeuft(), reason="Ollama laeuft nicht")
+def test_bge_m3_trennt_aehnliche_von_unaehnlichen_texten() -> None:
+    """Dieselbe Prüfung wie bei E5, damit der Vergleich in Aufgabe 15 auf gleichem Grund
+    steht: Wenn eine der beiden Umsetzungen nichts bedeutet, muss es hier auffallen."""
+    embedder = BgeM3Embedder()
+    rechnung_a = "Rechnung RE-2026-4711 ueber 1.190,00 EUR, zahlbar bis 30.04.2026."
+    rechnung_b = "Rechnung RE-2026-0815 ueber 2.380,00 EUR, Zahlungsziel 14 Tage netto."
+    vertrag = "Mietvertrag ueber Gewerberaeume, Kuendigungsfrist drei Monate zum Quartal."
+
+    vektoren = embedder.embed([rechnung_a, rechnung_b, vertrag])
+    assert vektoren.shape == (3, 1024)
+    normiert = vektoren / np.linalg.norm(vektoren, axis=1, keepdims=True)
+    aehnlich = float(normiert[0] @ normiert[1])
+    unaehnlich = float(normiert[0] @ normiert[2])
+    assert aehnlich > unaehnlich, (
+        f"Rechnung/Rechnung {aehnlich:.3f} liegt nicht ueber Rechnung/Vertrag {unaehnlich:.3f}"
+    )
+
+
+@pytest.mark.skipif(not ollama_laeuft(), reason="Ollama laeuft nicht")
+def test_bge_m3_bekommt_kein_e5_praefix() -> None:
+    """BGE-M3 kennt keine Präfixe. Stünde 'passage: ' davor, waere es schlicht Text im
+    Dokument und verschoebe jeden Vektor – ohne dass irgendetwas fehlschluege."""
+    embedder = BgeM3Embedder()
+    mit = embedder.embed(["passage: Rechnung ueber 100 EUR"])[0]
+    ohne = embedder.embed(["Rechnung ueber 100 EUR"])[0]
+    assert not np.allclose(mit, ohne), "Das Praefix ist folgenlos – dann stimmt der Aufruf nicht"
+
+
+def test_ollama_nicht_erreichbar_sagt_es_deutlich() -> None:
+    """Ein Verbindungsfehler darf nicht als leerer Vektor durchgehen – sonst trainierte
+    das Modell auf Nullen und niemand saehe es."""
+    embedder = BgeM3Embedder(url="http://localhost:1")
+    with pytest.raises(RuntimeError, match="Ollama"):
+        embedder.embed(["test"])
