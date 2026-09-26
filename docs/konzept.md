@@ -872,6 +872,8 @@ Wie im Referenzprojekt: **keine neue Phase, bevor die aktuelle erreicht und gete
   nachvollziehbarer Herkunft je Segment. Tests mit kleinen Fixtures je Format.
 
 ### Phase 2 — Merkmale, Klassifikator, Konfidenz
+
+> Ausgearbeiteter Umsetzungsplan für Phase 2: [plan-phase-2.md](plan-phase-2.md)
 - Embeddings, n-Gramme, Strukturmerkmale; logistische Regression; Temperature Scaling;
   Schwelle τ aus der Risiko-Abdeckungs-Kurve; OOD-Prüfung.
 - `evaluate.py` mit Macro-F1, ECE, Brier, Coverage@P98, Konfusionsmatrix, Reliability
