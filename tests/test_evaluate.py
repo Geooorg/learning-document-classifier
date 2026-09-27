@@ -359,6 +359,20 @@ def test_auroc_ist_none_wenn_es_nichts_zu_trennen_gibt() -> None:
     assert evaluate(gemischt, ["a", "b", "b"], KLASSEN_ZWEI).auroc_confidence is not None
 
 
+def test_auroc_zaehlt_gleichstaende_als_halb() -> None:
+    """Lauter gleiche Konfidenzen: Die Konfidenz trennt nichts, die AUROC ist **exakt**
+    0,5.
+
+    Ohne Mittelränge entschiede die Zeilenreihenfolge, welche von zwei gleich konfidenten
+    Vorhersagen „hoeher" steht – dieselbe Auswertung käme je nach Sortierung auf 0 oder 1.
+    Hier stehen die beiden richtigen Zeilen vorn, eine ordinale Rangvergabe ergäbe also
+    1,0.
+    """
+    proba = _sichere_vorhersage(["a"] * 4, KLASSEN_ZWEI)
+    m = evaluate(proba, ["a", "a", "b", "b"], KLASSEN_ZWEI)
+    assert m.auroc_confidence == 0.5
+
+
 def test_aurc_faellt_wenn_die_konfidenz_besser_trennt() -> None:
     """AURC ist die Fläche unter der Risiko-Abdeckungs-Kurve – kleiner ist besser.
     Bindet die Richtung: Ein Vorzeichenfehler wäre sonst unsichtbar."""
@@ -491,6 +505,24 @@ def test_bootstrap_haengt_am_seed_und_an_der_zahl_der_ziehungen() -> None:
     assert mit_sieben != mit_neun
     mit_vierzig = bootstrap_ci(proba, y, klassen, "macro_f1", rounds=40, seed=7)
     assert mit_sieben != mit_vierzig
+
+
+def test_bootstrap_liefert_ein_95_prozent_intervall() -> None:
+    """Die Perzentile sind 2,5 und 97,5 – nicht 5/95 und nicht 0,5/99,5.
+
+    Auf 400 Dokumenten mit einer Accuracy von genau 0,8 ist die Streuung der
+    Bootstrap-Accuracy bekannt: ``se = sqrt(0,8 · 0,2 / 400) = 0,02``, ein
+    95-%-Intervall ist also ``2 · 1,96 · se = 0,0784`` breit. Gemessen bei Seed 7 und
+    1000 Ziehungen: 0,0725. Die Nachbarn liegen deutlich daneben und fallen durch die
+    Toleranz von 12 % – 90 % ergäbe 0,0625, 99 % ergäbe 0,0925.
+    """
+    klassen = ("a", "b")
+    y = ["a"] * 320 + ["b"] * 80
+    proba = _proba(["a"] * 400, [0.9] * 400, klassen)
+    assert evaluate(proba, y, klassen).accuracy == pytest.approx(0.8)
+    unten, oben = bootstrap_ci(proba, y, klassen, "accuracy", rounds=1000)
+    erwartet = 2 * 1.96 * math.sqrt(0.8 * 0.2 / 400)
+    assert oben - unten == pytest.approx(erwartet, rel=0.12)
 
 
 def test_bootstrap_weist_zu_wenige_ziehungen_ab() -> None:
