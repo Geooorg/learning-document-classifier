@@ -2789,6 +2789,18 @@ git commit -m "Entscheidung AUTO, REVIEW oder SONSTIGES mit OOD zuerst"
   - `evaluate(proba, y_true, classes, target_precision=0.98) -> Metrics`
   - `confusion(y_true, y_pred, classes) -> pl.DataFrame`
   - `bootstrap_ci(proba, y_true, classes, metric, rounds=1000, seed=7) -> tuple[float, float]`
+    > **NACHTRÄGLICH GEÄNDERT.** Die Signatur hier hat zwei Fehler, die erst bei der
+    > Umsetzung auffielen. (1) `target_precision` fehlte, weshalb `coverage_at_precision`
+    > im Bootstrap immer mit 0,98 gezogen worden wäre, egal was der Aufrufer wollte.
+    > (2) Auf dünn besetzten Mengen wirft `evaluate` bei einer Ziehung, in der eine Klasse
+    > weder wahr noch vorhergesagt vorkommt — auf dem echten Gold-Set mit fünf Vorlagen je
+    > Klasse ist das der Regelfall, und die Funktion wäre gerade dort unbrauchbar gewesen,
+    > wofür es sie gibt. Gebaut ist deshalb:
+    > `bootstrap_ci(..., target_precision=0.98, rounds=1000, seed=7) -> BootstrapIntervall`
+    > mit den Feldern `unten`, `oben`, `uebersprungen`. Entartete Ziehungen werden
+    > übersprungen und **gezählt**; bleiben weniger als `MINDESTZIEHUNGEN` brauchbare
+    > übrig, wirft die Funktion. Die Zahl der übersprungenen Ziehungen ist ein Befund über
+    > den Bestand und darf nicht verschwinden — das Intervall ist auf sie bedingt.
 
 **Worum es geht:** Konzept §9.3. Die Hauptzahl ist **Macro-F1**, nicht Accuracy — die
 belohnt nur die häufigste Klasse. Die Konfusionsmatrix ist bei dieser Aufgabe wertvoller
