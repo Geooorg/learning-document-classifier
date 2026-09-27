@@ -320,6 +320,43 @@ def test_coverage_at_precision_folgt_dem_ziel() -> None:
     )
 
 
+def test_coverage_at_precision_nutzt_ohne_argument_das_ziel_0_98() -> None:
+    """Die Vorgabe selbst, ohne sie zu übergeben – sonst hängt die Hauptkennzahl an einer
+    Zahl, die kein Test sieht.
+
+    Nachgemessen: Die Mutation ``target_precision = 0.98 -> 0.90`` ließ die volle Suite
+    durch, weil der Handrechnungstest bei beiden Zielen 0,6 erwartet und der Zieltest das
+    Ziel immer ausdrücklich übergibt. Auf realistischen Daten wäre die Coverage dadurch
+    0,840 statt 0,277 gewesen.
+
+    Zwei Mengen klemmen die Vorgabe von beiden Seiten ein:
+
+    * Zehn Zeilen, die neun konfidentesten richtig: Die Präfix-Präzisionen sind 1 bis zur
+      Abdeckung 0,9 und danach 0,9. Ein Ziel über 0,9 ergibt 0,9, ein Ziel bis 0,9 ergibt
+      1,0 – das tötet jede Absenkung der Vorgabe auf 0,90 oder darunter.
+    * Hundert Zeilen, die beiden letzten falsch: Die Präzision ist bei voller Abdeckung
+      **exakt** 0,98 und eine Stufe davor 98/99 = 0,98990. Ein Ziel von 0,98 ergibt 1,0,
+      jedes strengere 0,99 – das tötet jede Anhebung.
+    """
+    vorhergesagt = ["RECHNUNG", "GUTSCHRIFT"] * 4 + ["RECHNUNG", "RECHNUNG"]
+    proba = _proba(vorhergesagt, list(np.linspace(0.99, 0.90, 10)), KLASSEN_BELEG)
+    y = [*vorhergesagt[:9], "GUTSCHRIFT"]
+    assert evaluate(proba, y, KLASSEN_BELEG).coverage_at_precision == pytest.approx(0.9)
+    assert evaluate(proba, y, KLASSEN_BELEG, target_precision=0.90).coverage_at_precision == (
+        pytest.approx(1.0)
+    )
+
+    viele = ["RECHNUNG", "GUTSCHRIFT"] * 50
+    proba_viele = _proba(viele, list(np.linspace(0.99, 0.60, 100)), KLASSEN_BELEG)
+    y_viele = [*viele[:98], "GUTSCHRIFT", "RECHNUNG"]
+    assert evaluate(proba_viele, y_viele, KLASSEN_BELEG).coverage_at_precision == (
+        pytest.approx(1.0)
+    )
+    assert evaluate(
+        proba_viele, y_viele, KLASSEN_BELEG, target_precision=0.99
+    ).coverage_at_precision == pytest.approx(0.98)
+
+
 def test_coverage_ist_null_wenn_kein_ziel_haelt() -> None:
     """Kein Fehler, sondern ein gültiges schlechtes Ergebnis (Aufgabentext).
 
