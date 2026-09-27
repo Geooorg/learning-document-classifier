@@ -41,7 +41,7 @@ from doccls.decide import (
     risk_coverage,
     tau_for_precision,
 )
-from doccls.models import Decision, Prediction
+from doccls.models import VERTEILUNGS_TOLERANZ, Decision, Prediction
 
 #: Analytisch gesuchtes τ für das Ziel 0,98 auf ``_konfidenz_mit_rauschen``:
 #: ``(t + 1) / 2 = 0,98`` ⇒ ``t = 0,96``.
@@ -579,6 +579,15 @@ def test_ood_schlaegt_hohe_konfidenz() -> None:
     Klassen und verteilt die Masse auf sie."""
     p = _entscheide([0.99, 0.005, 0.005], ood_score=0.9, tau=0.9, delta=0.5)
     assert p.class_key == "SONSTIGES" and p.decision is Decision.REVIEW
+    # Die drei Zahlen gehoeren zur Verteilung, nicht zur Entscheidung: Auch auf dem
+    # OOD-Pfad beschreiben sie, was das Modell gesagt hat. Ohne diese Zeilen bindet kein
+    # Test sie hier -- gemessen: Ein "konfidenz, margin, entropie = 1.0, 1.0, 0.0" im
+    # OOD-Zweig liess alle 339 Tests gruen. Das ist nicht kosmetisch: Phase 3 waehlt die
+    # Pruefliste nach der Margin aus, und SONSTIGES-Dokumente sind gerade die, die
+    # dorthin gehen.
+    assert p.confidence == pytest.approx(0.99)
+    assert p.margin == pytest.approx(0.985)
+    assert p.entropy == pytest.approx(0.06293300616044681)
 
 
 def test_ood_gewinnt_wenn_beide_pruefungen_greifen() -> None:
@@ -660,14 +669,25 @@ def test_gleichstand_faellt_auf_die_vorderste_klasse() -> None:
     assert gleichstand.confidence == pytest.approx(1 / 16)
 
 
-def test_konfidenz_und_klasse_gehoeren_zusammen() -> None:
+@pytest.mark.parametrize(("tau", "erwartet"), [(0.5, Decision.AUTO), (1.0, Decision.REVIEW)])
+def test_konfidenz_und_klasse_gehoeren_zusammen(tau: float, erwartet: Decision) -> None:
     """Der lautlose Fehler: argmax über die Wahrscheinlichkeiten, aber der Name aus einer
-    anders sortierten Liste. Dann stimmt die Zahl, und der Name stimmt nicht."""
+    anders sortierten Liste. Dann stimmt die Zahl, und der Name stimmt nicht.
+
+    **Beide Zweige, nicht nur der eine.** Der Name wird an zwei Stellen gesetzt – einmal
+    für ``AUTO``, einmal für ``REVIEW`` –, und dieselbe Schleife muss durch beide laufen.
+    Gemessen, bevor dieser Test parametrisiert war: ``classes[bester]`` im REVIEW-Zweig
+    durch ``classes[0]`` ersetzt liess die ganze Suite mit 339 Tests grün, weil jeder Test,
+    der den REVIEW-Zweig überhaupt erreichte, eine Verteilung benutzte, deren beste Klasse
+    ohnehin auf Index 0 sass. Das ``tau`` von 1,0 liegt über jeder Konfidenz und schickt
+    dieselben Verteilungen durch den anderen Zweig.
+    """
     for i, klasse in enumerate(KLASSEN):
         proba = np.full(len(KLASSEN), 0.01, dtype=np.float64)
         proba[i] = 1.0 - 0.01 * (len(KLASSEN) - 1)
-        p = _entscheide(proba, ood_score=0.0, tau=0.5, delta=0.9)
+        p = _entscheide(proba, ood_score=0.0, tau=tau, delta=0.9)
         assert p.class_key == klasse and p.confidence == pytest.approx(proba[i])
+        assert p.decision is erwartet
 
 
 def test_genau_auf_der_schwelle_gilt_als_auto() -> None:
@@ -717,8 +737,38 @@ def test_die_ood_schwelle_wirkt_bei_einem_zweiten_delta(
     weit.
     """
     p = _entscheide([0.95, 0.03, 0.02], ood_score=ood_score, delta=delta)
-    assert (p.class_key == "SONSTIGES") is ist_sonstiges
     assert p.class_key == ("SONSTIGES" if ist_sonstiges else "RECHNUNG")
+
+
+@pytest.mark.parametrize("anzahl", [4, 6, 7, 20])
+def test_was_die_verteilungspruefung_durchlaesst_nimmt_die_vorhersage_an(
+    anzahl: int,
+) -> None:
+    """Die beiden Toleranzen müssen zueinander passen, sonst weist ``Prediction`` ab, was
+    ``decide_one`` gerade durchgelassen hat.
+
+    ``_als_verteilung`` erlaubt eine Summe von ``1 ± VERTEILUNGS_TOLERANZ``. Eine um ``ε``
+    verkleinerte Verteilung hat aber eine um bis zu ``ε · H`` kleinere Entropie, während
+    die Schranke ``−ln(max p)`` nur um ``ε`` steigt. Der Fehlbetrag wächst also mit der
+    Klassenzahl und übersteigt ein festes ``TOLERANZ`` ab vier Klassen. Gemessen, bevor
+    die Toleranzen gekoppelt waren, bei sieben gleichverteilten Klassen und ``ε = 6e-7``:
+
+        ValidationError: Entropie 1.9459095815090444 ist zu klein fuer die Konfidenz
+        0.14285705714285715 ... >= 1.9459107490554932
+
+    Die Gleichverteilung ist hier der schärfste Fall: Sie hat die größte Entropie bei
+    gegebener Klassenzahl und damit den größten Fehlbetrag.
+    """
+    klassen = tuple(f"KLASSE_{i:02d}" for i in range(anzahl))
+    knapp_darunter = 1.0 - 0.6 * VERTEILUNGS_TOLERANZ
+    p = _entscheide(
+        np.full(anzahl, knapp_darunter / anzahl),
+        classes=klassen,
+        ood_score=0.1,
+        tau=0.5,
+        delta=0.9,
+    )
+    assert p.entropy == pytest.approx(math.log(anzahl), abs=1e-5)
 
 
 def test_herkunft_und_bezug_stehen_in_der_vorhersage() -> None:

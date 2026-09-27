@@ -59,7 +59,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.special import xlogy
 
-from doccls.models import RESIDUAL_CLASS_KEY, Decision, Prediction
+from doccls.models import RESIDUAL_CLASS_KEY, VERTEILUNGS_TOLERANZ, Decision, Prediction
 
 Zahlenreihe = npt.NDArray[np.float32] | npt.NDArray[np.float64]
 Zahlenfeld = npt.NDArray[np.float32] | npt.NDArray[np.float64]
@@ -278,7 +278,7 @@ def ood_scores(X: Zahlenfeld, X_train: Zahlenfeld, k: int = 10) -> npt.NDArray[n
     tatsächlich liegt.
 
     Die Prüfung ist nötig, weil ein lineares Modell auf einem Dokument, das keiner Klasse
-    ähnelt, trotzdem selbstbewusst sein kann: Es kennt nur seine sieben Klassen und
+    ähnelt, trotzdem selbstbewusst sein kann: Es kennt nur seine trainierten Klassen und
     verteilt die Masse auf sie. Der Abstand im Embedding-Raum ist davon unabhängig.
 
     ``k`` größer als der Trainingsbestand wird **abgelehnt, nicht gekürzt**: Stillschweigend
@@ -407,18 +407,6 @@ def delta_for_percentile(scores: Zahlenreihe, percentile: float = 95.0) -> float
             "Punkt der Stichprobe hochgerechnet statt aus der Verteilung abgelesen."
         )
     return float(np.percentile(werte, percentile, method="linear"))
-
-
-VERTEILUNGS_TOLERANZ = 1e-6
-"""Wie weit sich ``proba`` von der Summe 1 entfernen darf.
-
-Nicht enger: Eine Softmax-Ausgabe in ``float32`` – ``Zahlenreihe`` lässt sie ausdrücklich
-zu – summiert sich nur auf etwa ``1e-7`` genau zu 1, und eine strengere Schranke wiese
-gültige Eingaben ab. Nicht weiter: Ab ``1e-6`` ginge die Prüfung an dem vorbei, wogegen
-sie steht – an Rohwerten (``decision_scores``) statt Wahrscheinlichkeiten, an einer
-Verteilung über andere Klassen als ``classes``, an einer Spalte, die beim Umsortieren
-verloren ging.
-"""
 
 
 def _im_bereich(wert: float, name: str, unten: float, oben: float, begruendung: str) -> float:

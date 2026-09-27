@@ -189,15 +189,52 @@ bindet ``test_restklasse_stimmt_mit_dem_klassenschema_ueberein`` – zwei Stelle
 derselben Zeichenkette sind sonst genau die Falle, die beim übernächsten Umbau zuschlägt.
 """
 
+VERTEILUNGS_TOLERANZ = 1e-6
+"""Wie weit sich ``proba`` von der Summe 1 entfernen darf (``decide._als_verteilung``).
+
+Nicht enger: Eine Softmax-Ausgabe in ``float32`` summiert sich nur auf etwa ``1e-7`` genau
+zu 1, und eine strengere Schranke wiese gültige Eingaben ab. Nicht weiter: Ab ``1e-6``
+ginge die Prüfung an dem vorbei, wogegen sie steht – an Rohwerten (``decision_scores``)
+statt Wahrscheinlichkeiten, an einer Verteilung über andere Klassen als ``classes``, an
+einer Spalte, die beim Umsortieren verloren ging.
+
+**Die Konstante steht hier und nicht in** ``decide``, **obwohl sie dort geprüft wird.**
+:class:`Prediction` muss sie kennen (siehe :func:`_spielraum`), und ``decide`` hängt
+ohnehin von diesem Modul ab – umgekehrt ginge es nicht.
+"""
+
 TOLERANZ = 1e-6
-"""Spielraum für die Ungleichungen in :class:`Prediction`.
+"""Fester Anteil am Spielraum für die Ungleichungen in :class:`Prediction`.
 
 Nicht enger, weil eine Verteilung aus ``float32``-Wahrscheinlichkeiten (``Zahlenreihe``
 lässt beides zu) sich nur auf etwa ``1e-7`` genau zu 1 summiert; die daraus abgeleiteten
 Schranken erben diesen Fehler. Nicht weiter, weil die Prüfungen sonst nichts mehr fangen:
 Die kleinste hier abgewiesene Verletzung (Konfidenz 0,95 mit Margin 0,01) liegt um 0,89
 daneben.
+
+Der feste Anteil allein reicht nicht – siehe :func:`_spielraum`.
 """
+
+
+def _spielraum(entropie: float) -> float:
+    """Der Spielraum der Ungleichungen, gekoppelt an :data:`VERTEILUNGS_TOLERANZ`.
+
+    Eine Verteilung darf sich um ``ε ≤ VERTEILUNGS_TOLERANZ`` von der Summe 1 entfernen.
+    Eine um ``ε`` verkleinerte Verteilung hat aber eine um bis zu ``ε · H`` kleinere
+    Entropie, während die Schranke ``−ln(max p)`` nur um ``ε`` steigt. Der Fehlbetrag
+    wächst also mit der Entropie und damit mit der Klassenzahl – ein **fester** Spielraum
+    wies deshalb gültige Eingaben ab, gemessen ab vier Klassen (sieben gleichverteilte
+    Klassen, Summe ``1 − 6·10⁻⁷``):
+
+        ValidationError: Entropie 1.9459095815090444 ist zu klein fuer die Konfidenz
+        0.14285705714285715 … >= 1.9459107490554932
+
+    Deshalb ist der Spielraum an die Entropie gebunden. Die ``+ 1`` fängt den konstanten
+    Anteil ``ε`` der Margin-Ungleichung mit ab, damit beide Prüfungen dieselbe Formel
+    benutzen. Auf echte Verletzungen wirkt sich das nicht aus: Der Zuschlag liegt bei
+    sieben Klassen unter ``3 · 10⁻⁶``, die kleinste abgewiesene Verletzung 0,89 daneben.
+    """
+    return TOLERANZ + VERTEILUNGS_TOLERANZ * (entropie + 1.0)
 
 
 class Prediction(BaseModel):
@@ -273,7 +310,7 @@ class Prediction(BaseModel):
                 "verschiedenen Verteilungen."
             )
         kleinste_margin = 2.0 * self.confidence - 1.0
-        if self.margin < kleinste_margin - TOLERANZ:
+        if self.margin < kleinste_margin - _spielraum(self.entropy):
             raise ValueError(
                 f"Margin {self.margin} ist zu klein fuer die Konfidenz {self.confidence}: "
                 f"Die zweitbeste Klasse haette dann {self.confidence - self.margin}, und "
@@ -281,7 +318,7 @@ class Prediction(BaseModel):
                 f"{kleinste_margin} und mehr."
             )
         kleinste_entropie = -math.log(self.confidence)
-        if self.entropy < kleinste_entropie - TOLERANZ:
+        if self.entropy < kleinste_entropie - _spielraum(self.entropy):
             raise ValueError(
                 f"Entropie {self.entropy} ist zu klein fuer die Konfidenz "
                 f"{self.confidence}. Weil keine Klasse wahrscheinlicher ist als die "
