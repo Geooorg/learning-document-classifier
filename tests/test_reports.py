@@ -38,6 +38,7 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 import pytest
+from matplotlib.figure import Figure
 
 from doccls.calibrate import apply_temperature, expected_calibration_error, fit_temperature
 from doccls.evaluate import WAHR_SPALTE, Metrics, confusion, evaluate
@@ -363,14 +364,21 @@ def test_die_korbzahl_wirkt_auf_das_diagramm(tmp_path: Path) -> None:
     Punkte auf der Kurve als mit zehn."""
     vorher, nachher, y, klassen = _vorher_nachher(seed=19)
 
-    def punkte(korbzahl: int) -> int:
+    def punkte(korbzahl: int, welche: str) -> int:
         _, figur = reliability_diagram(
             vorher, nachher, y, klassen, tmp_path / f"r{korbzahl}.png", bins=korbzahl
         )
-        linie = next(li for li in figur.axes[0].get_lines() if "vor" in str(li.get_label()).lower())
+        linie = next(
+            li for li in figur.axes[0].get_lines() if str(li.get_label()).startswith(welche)
+        )
         return len(np.asarray(linie.get_xydata()))
 
-    assert punkte(4) < punkte(10)
+    # BEIDE Kurven, nicht nur die vordere. Gemessen, bevor das hier stand: Ein fest
+    # verdrahtetes bins=10 fuer die Kurve "nach" liess alle 58 Tests gruen -- die beiden
+    # Kurven im selben Bild trugen dann verschiedene Einteilungen und nannten in ihren
+    # Beschriftungen zwei nicht vergleichbare Eichfehler.
+    for welche in ("vor", "nach"):
+        assert punkte(4, welche) < punkte(10, welche), welche
 
 
 def test_diagramm_legt_das_verzeichnis_an(tmp_path: Path) -> None:
@@ -406,6 +414,11 @@ def _mit_erhoehter_zelle(zeile: int, spalte: int) -> pl.DataFrame:
     return _matrix(zaehlung)
 
 
+def _pfad(ergebnis: tuple[Path, Figure]) -> Path:
+    """Nur der Pfad aus ``(Pfad, Figur)`` – die Figur braucht der Bildpunktvergleich nicht."""
+    return ergebnis[0]
+
+
 def _bild(pfad: Path) -> npt.NDArray[np.float64]:
     gelesen: npt.NDArray[np.float64] = np.asarray(matplotlib.image.imread(pfad), dtype=np.float64)
     return gelesen
@@ -439,10 +452,10 @@ def test_konfusionsbild_legt_die_wahrheit_in_die_zeile(tmp_path: Path) -> None:
     rechts, muss sich der Unterschied im Bild nach rechts verschieben und **nicht** nach
     unten.
     """
-    grund = _bild(confusion_heatmap(_matrix(_GRUND), tmp_path / "g.png"))
-    oben_links = _bild(confusion_heatmap(_mit_erhoehter_zelle(0, 0), tmp_path / "a.png"))
-    oben_rechts = _bild(confusion_heatmap(_mit_erhoehter_zelle(0, 1), tmp_path / "b.png"))
-    unten_links = _bild(confusion_heatmap(_mit_erhoehter_zelle(1, 0), tmp_path / "c.png"))
+    grund = _bild(_pfad(confusion_heatmap(_matrix(_GRUND), tmp_path / "g.png")))
+    oben_links = _bild(_pfad(confusion_heatmap(_mit_erhoehter_zelle(0, 0), tmp_path / "a.png")))
+    oben_rechts = _bild(_pfad(confusion_heatmap(_mit_erhoehter_zelle(0, 1), tmp_path / "b.png")))
+    unten_links = _bild(_pfad(confusion_heatmap(_mit_erhoehter_zelle(1, 0), tmp_path / "c.png")))
 
     x_a, y_a = _schwerpunkt_des_unterschieds(grund, oben_links)
     x_b, y_b = _schwerpunkt_des_unterschieds(grund, oben_rechts)
@@ -454,11 +467,66 @@ def test_konfusionsbild_legt_die_wahrheit_in_die_zeile(tmp_path: Path) -> None:
     assert abs(x_c - x_a) < 15.0, "dieselbe Spalte muss an derselben Stelle liegen"
 
 
+def test_konfusionsbild_beschriftet_die_achsen_in_der_richtigen_richtung(
+    tmp_path: Path,
+) -> None:
+    """Die Geometrie der Zellen ist gebunden, die **Beschriftung** war es nicht.
+
+    Gemessen, bevor dieser Test da war: x- und y-Beschriftung vertauscht liess die ganze
+    Testreihe gruen. Alle Zahlen und alle Klassennamen bleiben dabei richtig – und
+    trotzdem liest jeder Betrachter jede Zelle neben der Diagonale verkehrt herum. Genau
+    dieser Unterschied ist laut Moduldoc „der ganze Inhalt".
+    """
+    _, figur = confusion_heatmap(_matrix(_GRUND), tmp_path / "achsen.png")
+    achse = figur.axes[0]
+    assert achse.get_xlabel() == "Vorhergesagt"
+    assert achse.get_ylabel() == "Wahr"
+
+
+def test_konfusionsbild_faengt_die_farbskala_bei_null_an(tmp_path: Path) -> None:
+    """Der Docstring sagt zu, dass zwei Bilder desselben Laufs vergleichbar sind. Das
+    haelt nur, wenn die Skala fest bei 0 beginnt – sonst wird dieselbe Zellbesetzung in
+    einem schwach besetzten Bild dunkel und in einem stark besetzten hell. Ohne diesen
+    Test war ``vmin=0.0`` ungebunden: Sein Entfernen liess alle Tests gruen, weil alle
+    verwendeten Matrizen ohnehin dasselbe Minimum haben.
+    """
+    _, figur = confusion_heatmap(_matrix(_GRUND), tmp_path / "skala.png")
+    bild = figur.axes[0].images[0]
+    assert bild.get_clim()[0] == 0.0
+
+
+def test_beide_bilder_ueberschreiben_eine_vorhandene_datei(tmp_path: Path) -> None:
+    """Ein Lauf schreibt nach ``data/reports/<model_version>/``, und ein zweiter Lauf
+    derselben Version muss die Bilder des ersten ersetzen. Bliebe ein altes Bild stehen,
+    waere es in Aufgabe 16 vom aktuellen nicht zu unterscheiden – und genau das ist der
+    Fehler, den niemand bemerkt. Geprueft wird ueber den Inhalt, nicht ueber die
+    Aenderungszeit: Die Aufloesung der Zeitstempel reicht hier nicht.
+    """
+    vorher, nachher, y, klassen = _vorher_nachher(seed=19)
+    ziel_diagramm = tmp_path / "reliability.png"
+    reliability_diagram(vorher, nachher, y, klassen, ziel_diagramm, bins=4)
+    vier_koerbe = ziel_diagramm.read_bytes()
+    reliability_diagram(vorher, nachher, y, klassen, ziel_diagramm, bins=10)
+    assert ziel_diagramm.read_bytes() != vier_koerbe
+
+    ziel_matrix = tmp_path / "confusion.png"
+    confusion_heatmap(_matrix(_GRUND), ziel_matrix)
+    grund = ziel_matrix.read_bytes()
+    confusion_heatmap(_mit_erhoehter_zelle(0, 1), ziel_matrix)
+    assert ziel_matrix.read_bytes() != grund
+
+    ziel_zahlen = tmp_path / "metrics.json"
+    write_metrics(_kennzahlen(), ziel_zahlen)
+    ziel_zahlen.write_text("{}", encoding="utf-8")
+    write_metrics(_kennzahlen(), ziel_zahlen)
+    assert ziel_zahlen.read_text(encoding="utf-8") != "{}"
+
+
 def test_konfusionsbild_ist_reproduzierbar(tmp_path: Path) -> None:
     """Dieselbe Matrix ergibt dieselben Bildpunkte. Ohne das wäre der Vergleich zweier
     Läufe in ``docs/auswertungen.md`` nicht zu führen."""
-    erst = _bild(confusion_heatmap(_matrix(_GRUND), tmp_path / "erst.png"))
-    zweit = _bild(confusion_heatmap(_matrix(_GRUND), tmp_path / "zweit.png"))
+    erst = _bild(_pfad(confusion_heatmap(_matrix(_GRUND), tmp_path / "erst.png")))
+    zweit = _bild(_pfad(confusion_heatmap(_matrix(_GRUND), tmp_path / "zweit.png")))
     assert np.array_equal(erst, zweit)
 
 
@@ -467,13 +535,13 @@ def test_konfusionsbild_nimmt_die_matrix_aus_confusion(tmp_path: Path) -> None:
     zwischen Rechnung und Bild eine zweite, ungeprüfte Umformung."""
     wahrheit = ["VERTRAG", "AGB", "RECHNUNG", "RECHNUNG"]
     vorhersage = ["VERTRAG", "RECHNUNG", "RECHNUNG", "AGB"]
-    pfad = confusion_heatmap(confusion(wahrheit, vorhersage, KLASSEN_DREI), tmp_path / "k.png")
+    pfad, _ = confusion_heatmap(confusion(wahrheit, vorhersage, KLASSEN_DREI), tmp_path / "k.png")
     assert pfad.exists() and pfad.stat().st_size > 0
 
 
 def test_konfusionsbild_legt_das_verzeichnis_an(tmp_path: Path) -> None:
     ziel = tmp_path / "reports" / "logreg-1" / "confusion.png"
-    assert confusion_heatmap(_matrix(_GRUND), ziel) == ziel
+    assert confusion_heatmap(_matrix(_GRUND), ziel)[0] == ziel
     assert ziel.exists()
 
 

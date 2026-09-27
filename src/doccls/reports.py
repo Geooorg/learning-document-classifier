@@ -34,7 +34,7 @@ import numpy.typing as npt
 import polars as pl
 from matplotlib.figure import Figure
 
-from doccls.calibrate import ReliabilityBin, reliability_bins
+from doccls.calibrate import ReliabilityBin, eichfehler_aus_koerben, reliability_bins
 from doccls.evaluate import WAHR_SPALTE, Metrics
 from doccls.zahlen import Zahlenfeld
 
@@ -98,7 +98,7 @@ def reliability_diagram(
             [korb.trefferquote for korb in koerbe],
             marker=form,
             color=farbe,
-            label=f"{beschriftung} (ECE {_deutsch(_eichfehler(koerbe))})",
+            label=f"{beschriftung} (ECE {_deutsch(eichfehler_aus_koerben(koerbe))})",
         )
 
     achse.set_xlim(0.0, 1.0)
@@ -114,7 +114,7 @@ def reliability_diagram(
     return _speichern(figur, path), figur
 
 
-def confusion_heatmap(matrix: pl.DataFrame, path: Path) -> Path:
+def confusion_heatmap(matrix: pl.DataFrame, path: Path) -> tuple[Path, Figure]:
     """Die Konfusionsmatrix als Bild: **Zeile = Wahrheit, Spalte = Vorhersage**.
 
     ``matrix`` ist die Tabelle aus :func:`doccls.evaluate.confusion` und wird unverändert
@@ -124,10 +124,16 @@ def confusion_heatmap(matrix: pl.DataFrame, path: Path) -> Path:
     verschiedenen Kosten, und eine transponierte Darstellung vertauscht sie lautlos,
     während alle Randsummen plausibel bleiben.
 
-    Die Figur wird nicht zurückgegeben; nach dem Speichern hält sie niemand mehr
-    (Moduldoc). Die Farbskala beginnt fest bei 0, damit zwei Bilder desselben Laufs
-    vergleichbar sind und eine schwach besetzte Zelle nicht allein durch Normierung
-    dunkel wird.
+    Zurückgegeben wird ``(Pfad, Figur)`` wie beim Reliability Diagram. Die Figur wird
+    gebraucht, weil die **Achsenbeschriftung** aus einer PNG nicht lesbar ist: Die
+    Geometrie der Zellen lässt sich über die Bildpunkte prüfen, aber ob über der
+    x-Achse „Vorhergesagt" steht und neben der y-Achse „Wahr", nicht. Vertauscht man
+    die beiden Texte, bleiben alle Zahlen und alle Klassennamen richtig, und trotzdem
+    liest jeder Betrachter jede Zelle neben der Diagonale verkehrt herum – gemessen:
+    ohne diese Bindung überlebte genau diese Vertauschung die ganze Testreihe.
+
+    Die Farbskala beginnt fest bei 0, damit zwei Bilder desselben Laufs vergleichbar
+    sind und eine schwach besetzte Zelle nicht allein durch Normierung dunkel wird.
     """
     namen, zaehlung = _matrix_lesen(matrix)
 
@@ -156,7 +162,7 @@ def confusion_heatmap(matrix: pl.DataFrame, path: Path) -> Path:
     achse.set_title("Konfusionsmatrix")
     figur.tight_layout()
 
-    return _speichern(figur, path)
+    return _speichern(figur, path), figur
 
 
 def write_metrics(metrics: Metrics, path: Path) -> Path:
@@ -175,19 +181,6 @@ def write_metrics(metrics: Metrics, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(metrics.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return path
-
-
-def _eichfehler(koerbe: Sequence[ReliabilityBin]) -> float:
-    """Der ECE einer schon gerechneten Korbreihe.
-
-    Dieselbe Formel wie in :func:`doccls.calibrate.expected_calibration_error`, aber ohne
-    die Körbe ein zweites Mal zu bilden: Die Beschriftung soll die Zahl der gezeichneten
-    Kurve nennen und nicht die einer zweiten, gleich gemeinten Rechnung.
-    """
-    gesamt = sum(korb.anzahl for korb in koerbe)
-    return sum(
-        korb.anzahl / gesamt * abs(korb.mittlere_konfidenz - korb.trefferquote) for korb in koerbe
-    )
 
 
 def _deutsch(wert: float) -> str:

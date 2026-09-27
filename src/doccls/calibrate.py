@@ -261,10 +261,24 @@ def expected_calibration_error(
     0,0 heißt: Wo das Modell 0,8 sagt, trifft es in 0,8 der Fälle. Nahe 1,0 heißt: volle
     Sicherheit, durchgehend falsch.
     """
-    koerbe = reliability_bins(proba, y_true, classes, bins)
+    return eichfehler_aus_koerben(reliability_bins(proba, y_true, classes, bins))
+
+
+def eichfehler_aus_koerben(koerbe: Sequence[ReliabilityBin]) -> float:
+    """Der ECE einer **schon gebildeten** Korbreihe.
+
+    Zwei Aufrufer: :func:`expected_calibration_error`, das die Körbe erst bildet, und das
+    Reliability Diagram, das sie zeichnet und die Zahl in die Beschriftung setzt. Beide
+    dieselbe Formel, und zwar buchstäblich dieselbe – eine zweite, gleich gemeinte
+    Rechnung im Zeichenmodul wäre genau die Dublette, gegen die die Körbe hier
+    überhaupt stehen.
+    """
     gesamt = sum(korb.anzahl for korb in koerbe)
-    fehler = 0.0
-    for korb in koerbe:
-        luecke = abs(korb.mittlere_konfidenz - korb.trefferquote)
-        fehler += korb.anzahl / gesamt * luecke
-    return fehler
+    if gesamt == 0:
+        raise ValueError(
+            "Keine besetzten Koerbe uebergeben. Ein Eichfehler ueber nichts waere 0,0 - "
+            "ununterscheidbar von einer perfekten Eichung."
+        )
+    return sum(
+        korb.anzahl / gesamt * abs(korb.mittlere_konfidenz - korb.trefferquote) for korb in koerbe
+    )
