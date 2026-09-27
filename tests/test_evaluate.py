@@ -53,7 +53,7 @@ from pydantic import ValidationError
 
 from doccls.calibrate import apply_temperature
 from doccls.decide import risk_coverage
-from doccls.evaluate import Metrics, bootstrap_ci, confusion, evaluate
+from doccls.evaluate import NLL_OBERGRENZE, Metrics, bootstrap_ci, confusion, evaluate
 
 KLASSEN_ZWEI = ("a", "b")
 KLASSEN_HAEUFIG_SELTEN = ("haeufig", "selten")
@@ -761,16 +761,108 @@ def test_metrics_weist_einen_anteil_ab_der_kein_vielfaches_von_1_durch_n_ist() -
         Metrics(**_gueltige_kennzahlen(coverage_at_precision=0.3, n=4))
 
 
-def test_metrics_weist_kennzahlen_ausserhalb_ihres_bereichs_ab() -> None:
-    for feld, wert in (
-        ("macro_f1", 1.5),
-        ("accuracy", -0.1),
-        ("ece", 1.5),
-        ("brier", 1.5),
-        ("nll", -0.1),
-        ("aurc", 1.5),
-        ("auroc_confidence", 1.5),
-        ("n", 0),
-    ):
-        with pytest.raises(ValidationError):
-            Metrics(**_gueltige_kennzahlen(**{feld: wert}))
+#: Jede einzelne Feldschranke von :class:`Metrics`, je Fall eine Zeile: Kennung, die
+#: Abweichung vom gültigen Satz, und das Muster, das in der Meldung stehen muss.
+#:
+#: **Warum die Kennung und das Muster nötig sind.** Der Vorgänger dieses Tests prüfte nur,
+#: *dass* ein ``ValidationError`` kommt – und die Kreuzprüfungen in
+#: ``_pruefe_zusammenhaenge`` fingen die meisten Fälle vorher ab. Nachgemessen im Baum:
+#: ``macro_f1: Field(ge=0.0, le=1.0) -> Field()`` ließ die volle Suite durch, ebenso
+#: ``accuracy`` und ``coverage_at_precision`` zusammen; ``nll: le=NLL_OBERGRENZE ->
+#: (nur ge=0.0)`` ebenfalls. Vier von zehn Schranken waren ungeprüft, weil ein anderer
+#: Wächter die Meldung übernahm.
+#:
+#: **Warum diese Werte.** Sie müssen die Kreuzprüfungen *passieren*, damit die Feldschranke
+#: überhaupt zum Zug kommt: ``macro_f1`` nur zusammen mit passenden Klassenwerten,
+#: ``accuracy`` und ``coverage_at_precision`` nur als Vielfaches von ``1/n``
+#: (``1,25 · 4 = 5``, ``−0,25 · 4 = −1``). Ein Feld, dessen Schranke unterhalb einer
+#: Kreuzprüfung läge, wäre hier nicht zu binden – und genau das war der Befund.
+FELDSCHRANKEN: tuple[tuple[str, dict[str, Any], str], ...] = (
+    (
+        "macro_f1 zu gross",
+        {"macro_f1": 1.5, "per_class_f1": {"a": 1.5, "b": 1.5}},
+        r"macro_f1\n\s*Input should be less than or equal to 1\b",
+    ),
+    (
+        "macro_f1 negativ",
+        {"macro_f1": -0.25, "per_class_f1": {"a": -0.25, "b": -0.25}},
+        r"macro_f1\n\s*Input should be greater than or equal to 0\b",
+    ),
+    (
+        "per_class_f1 leer",
+        {"per_class_f1": {}},
+        r"per_class_f1\n\s*Dictionary should have at least 1 item",
+    ),
+    (
+        "accuracy zu gross",
+        {"accuracy": 1.25, "n": 4},
+        r"accuracy\n\s*Input should be less than or equal to 1\b",
+    ),
+    (
+        "accuracy negativ",
+        {"accuracy": -0.25, "n": 4},
+        r"accuracy\n\s*Input should be greater than or equal to 0\b",
+    ),
+    ("brier zu gross", {"brier": 1.5}, r"brier\n\s*Input should be less than or equal to 1\b"),
+    ("brier negativ", {"brier": -0.1}, r"brier\n\s*Input should be greater than or equal to 0\b"),
+    ("ece zu gross", {"ece": 1.5}, r"ece\n\s*Input should be less than or equal to 1\b"),
+    ("ece negativ", {"ece": -0.1}, r"ece\n\s*Input should be greater than or equal to 0\b"),
+    (
+        "nll ueber der Kappungsgrenze",
+        {"nll": 100.0},
+        r"nll\n\s*Input should be less than or equal to 27\.63",
+    ),
+    ("nll negativ", {"nll": -0.1}, r"nll\n\s*Input should be greater than or equal to 0\b"),
+    (
+        "coverage zu gross",
+        {"coverage_at_precision": 1.25, "n": 4},
+        r"coverage_at_precision\n\s*Input should be less than or equal to 1\b",
+    ),
+    (
+        "coverage negativ",
+        {"coverage_at_precision": -0.25, "n": 4},
+        r"coverage_at_precision\n\s*Input should be greater than or equal to 0\b",
+    ),
+    ("aurc zu gross", {"aurc": 1.5}, r"aurc\n\s*Input should be less than or equal to 1\b"),
+    ("aurc negativ", {"aurc": -0.1}, r"aurc\n\s*Input should be greater than or equal to 0\b"),
+    (
+        "auroc zu gross",
+        {"auroc_confidence": 1.5},
+        r"auroc_confidence\n\s*Input should be less than or equal to 1\b",
+    ),
+    (
+        "auroc negativ",
+        {"auroc_confidence": -0.1},
+        r"auroc_confidence\n\s*Input should be greater than or equal to 0\b",
+    ),
+    ("n ohne Dokument", {"n": 0}, r"n\n\s*Input should be greater than or equal to 1\b"),
+)
+
+
+@pytest.mark.parametrize(
+    ("abweichungen", "muster"),
+    [(abweichungen, muster) for _, abweichungen, muster in FELDSCHRANKEN],
+    ids=[kennung for kennung, _, _ in FELDSCHRANKEN],
+)
+def test_metrics_weist_kennzahlen_ausserhalb_ihres_bereichs_ab(
+    abweichungen: dict[str, Any], muster: str
+) -> None:
+    """Jede Feldschranke einzeln, und zwar an ihrer eigenen Meldung erkannt.
+
+    Ohne ``match`` genügte irgendein ``ValidationError`` – und den lieferte in den meisten
+    Fällen eine Kreuzprüfung, nicht die Schranke. Siehe :data:`FELDSCHRANKEN`.
+    """
+    with pytest.raises(ValidationError, match=muster):
+        Metrics(**_gueltige_kennzahlen(**abweichungen))
+
+
+def test_metrics_nimmt_die_raender_ihrer_bereiche_an() -> None:
+    """Die Gegenprobe zu :data:`FELDSCHRANKEN`: Eine Schranke, die den erlaubten Rand
+    mitabwiese, wäre durch jene Tests nicht von einer richtigen zu unterscheiden."""
+    Metrics(**_gueltige_kennzahlen(macro_f1=1.0, per_class_f1={"a": 1.0, "b": 1.0}))
+    Metrics(**_gueltige_kennzahlen(macro_f1=0.0, per_class_f1={"a": 0.0, "b": 0.0}))
+    Metrics(**_gueltige_kennzahlen(accuracy=1.0, coverage_at_precision=0.0, n=4))
+    Metrics(**_gueltige_kennzahlen(brier=0.0, ece=1.0, aurc=1.0, nll=0.0))
+    Metrics(**_gueltige_kennzahlen(nll=NLL_OBERGRENZE))
+    Metrics(**_gueltige_kennzahlen(auroc_confidence=None))
+    Metrics(**_gueltige_kennzahlen(accuracy=1.0, coverage_at_precision=1.0, n=1))
