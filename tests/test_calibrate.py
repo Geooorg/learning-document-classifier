@@ -325,9 +325,13 @@ def test_ece_lehnt_unpassende_korbzahl_ab() -> None:
 
 
 def test_unpassende_spaltenzahl_wird_abgelehnt() -> None:
-    """Waechter mit eigenem Test: Eine Spalte je Klasse – laufen die beiden auseinander,
-    zeigte jede Konfidenz auf die falsche Klasse (dieselbe lautlose Falle wie in
-    ``classify._klassen_pruefen``) und alle Zahlen blieben trotzdem plausibel."""
+    """Dass ``fit_temperature`` und der Eichfehler die Formpruefung *anwenden* – die Regel
+    selbst steht in ``tests/test_zahlen.py``.
+
+    Laufen Spalten und ``classes`` auseinander, zeigte jede Konfidenz auf die falsche
+    Klasse (dieselbe lautlose Falle wie in ``classify._klassenreihenfolge_pruefen``) und
+    alle Zahlen blieben trotzdem plausibel.
+    """
     logits, y, klassen = _ueberhebliche_vorhersagen(seed=3)
     with pytest.raises(ValueError, match="Spalte"):
         fit_temperature(logits, y, [*klassen, "e"])
@@ -336,16 +340,18 @@ def test_unpassende_spaltenzahl_wird_abgelehnt() -> None:
 
 
 def test_unpassende_zeilenzahl_wird_abgelehnt() -> None:
-    """Waechter mit eigenem Test: Weniger Wahrheiten als Vorhersagen wuerde sonst über
-    ``zip`` still abgeschnitten – die Kalibrierung liefe auf einer Teilmenge."""
+    """Dass ``fit_temperature`` die Zeilenpruefung anwendet (Regel: ``test_zahlen.py``).
+    Weniger Wahrheiten als Vorhersagen wuerde sonst über ``zip`` still abgeschnitten – die
+    Kalibrierung liefe auf einer Teilmenge."""
     logits, y, klassen = _ueberhebliche_vorhersagen(seed=3)
     with pytest.raises(ValueError, match="Zeile"):
         fit_temperature(logits, y[:-1], klassen)
 
 
 def test_unbekannte_klasse_wird_abgelehnt() -> None:
-    """Waechter mit eigenem Test: Eine Wahrheit, die in ``classes`` fehlt, hat keine
-    Spalte – ohne Pruefung liefe sie auf einen falschen Index oder stillschweigend mit."""
+    """Dass ``fit_temperature`` den Klassenindex anwendet (Regel: ``test_zahlen.py``).
+    Eine Wahrheit, die in ``classes`` fehlt, hat keine Spalte – ohne Pruefung liefe sie auf
+    einen falschen Index oder stillschweigend mit."""
     logits, y, klassen = _ueberhebliche_vorhersagen(seed=3)
     y_verfaelscht = [*y[:-1], "z"]
     with pytest.raises(ValueError, match="unbekannte"):

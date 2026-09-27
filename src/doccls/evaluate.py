@@ -24,10 +24,9 @@ Funktionen, die *trainieren* oder *kalibrieren*.
 
 **Wiederverwendet statt nachgebaut.** Der Eichfehler kommt aus
 :func:`doccls.calibrate.expected_calibration_error`, die Risiko-Abdeckungs-Kurve aus
-:func:`doccls.decide.risk_coverage`, und die Formprüfungen aus ``calibrate``. Die
+:func:`doccls.decide.risk_coverage`, und die Formprüfungen aus ``doccls.zahlen``. Die
 Prüfungen dort und hier sind dieselbe Regel; zwei Kopien liefen irgendwann auseinander,
-und die zweite wäre die ungepflegte. Deshalb werden die modulprivaten Helfer von
-``calibrate`` innerhalb des Pakets importiert, statt sie abzuschreiben.
+und die zweite wäre die ungepflegte.
 """
 
 import math
@@ -41,14 +40,9 @@ from pydantic import BaseModel, Field, model_validator
 from scipy.stats import rankdata
 from sklearn.metrics import confusion_matrix, f1_score
 
-from doccls.calibrate import (
-    Zahlenfeld,
-    _als_float64,
-    _klassenindex,
-    _pruefe_form,
-    expected_calibration_error,
-)
+from doccls.calibrate import expected_calibration_error
 from doccls.decide import risk_coverage
+from doccls.zahlen import Zahlenfeld, als_float64, klassenindex, pruefe_form
 
 WAHRSCHEINLICHKEITS_UNTERGRENZE = 1e-12
 """Woran ``nll`` eine Wahrscheinlichkeit von 0 abfängt.
@@ -181,10 +175,10 @@ class Metrics(BaseModel):
         return self
 
 
-def _klassen_pruefen(classes: Sequence[str]) -> list[str]:
+def _klassenliste_pruefen(classes: Sequence[str]) -> list[str]:
     """Mindestens zwei Klassen, keine doppelt.
 
-    Doppelte Namen kämen sonst lautlos durch: ``_klassenindex`` baut eine Abbildung
+    Doppelte Namen kämen sonst lautlos durch: ``klassenindex`` baut eine Abbildung
     ``Name → Spalte`` und behielte von zwei gleichen Namen nur den letzten. Jede Wahrheit
     dieser Klasse zeigte dann auf die falsche Spalte, und ``per_class_f1`` hätte einen
     Eintrag weniger als ``classes`` – das Mittel liefe über eine andere Zahl von Klassen.
@@ -239,9 +233,9 @@ def evaluate(
     ``2·TP / (2·TP + FP + FN)`` ohne Division durch null aus; ``zero_division`` kommt dabei
     gar nicht zum Zug. Genau dieser Fall ist der Grund, warum Macro-F1 die Hauptzahl ist.
     """
-    namen = _klassen_pruefen(classes)
-    werte = _als_float64(proba)
-    _pruefe_form(werte, y_true, namen)
+    namen = _klassenliste_pruefen(classes)
+    werte = als_float64(proba)
+    pruefe_form(werte, y_true, namen)
     if werte.shape[0] == 0:
         raise ValueError(
             "Keine Dokumente uebergeben. Ueber die leere Menge ist keine Kennzahl "
@@ -254,7 +248,7 @@ def evaluate(
             "ist keine Anforderung."
         )
 
-    ziel = _klassenindex(y_true, namen)
+    ziel = klassenindex(y_true, namen)
     vorhergesagt = werte.argmax(axis=1)
     vorhanden = set(ziel.tolist()) | set(vorhergesagt.tolist())
     fehlend = [name for index, name in enumerate(namen) if index not in vorhanden]
@@ -351,7 +345,7 @@ def confusion(
     stillschweigend aus, und die Matrix summierte sich dann auf weniger Dokumente als
     übergeben, ohne dass es irgendwo stünde.
     """
-    namen = _klassen_pruefen(classes)
+    namen = _klassenliste_pruefen(classes)
     if WAHR_SPALTE in namen:
         raise ValueError(
             f"Eine Klasse heisst {WAHR_SPALTE!r} wie die Spalte mit der Zeilenbeschriftung. "
@@ -437,9 +431,9 @@ def bootstrap_ci(
             "Darunter sitzen beide Grenzen auf dem kleinsten und groessten gezogenen Wert, "
             "und das Intervall misst die Zahl der Ziehungen statt die Streuung."
         )
-    werte = _als_float64(proba)
-    namen = _klassen_pruefen(classes)
-    _pruefe_form(werte, y_true, namen)
+    werte = als_float64(proba)
+    namen = _klassenliste_pruefen(classes)
+    pruefe_form(werte, y_true, namen)
     wahrheit = np.asarray([str(wert) for wert in y_true], dtype=np.str_)
     if wahrheit.size == 0:
         raise ValueError("Keine Dokumente uebergeben - aus nichts wird nicht gezogen.")

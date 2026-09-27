@@ -43,6 +43,8 @@ import numpy.typing as npt
 from scipy.optimize import minimize_scalar
 from scipy.special import log_softmax, softmax
 
+from doccls.zahlen import Zahlenfeld, als_float64, klassenindex, pruefe_form
+
 #: Suchbereich für ``T``. Die Untergrenze ist die praktische Grenze der Aussagekraft:
 #: Unter 0,05 unterscheidet sich das Ergebnis nicht mehr von einer harten Entscheidung.
 #: Die Untergrenze liegt ausdrücklich **unter** 1,0 – ein Modell kann auch zu zaghaft
@@ -55,58 +57,6 @@ T_OBERGRENZE = 20.0
 #: Schranke, sondern bis auf ihre eigene Toleranz heran (gemessen: 0,050007 statt 0,05),
 #: ein Vergleich auf Gleichheit ginge also immer ins Leere.
 RAND_TOLERANZ = 0.01
-
-Zahlenfeld = npt.NDArray[np.float32] | npt.NDArray[np.float64]
-
-
-def _als_float64(matrix: Zahlenfeld) -> npt.NDArray[np.float64]:
-    """Zweidimensional und in doppelter Genauigkeit – die Optimierung rechnet nicht auf
-    ``float32``, sonst hinge das Ergebnis an der Rundung der Eingabe."""
-    werte = np.asarray(matrix, dtype=np.float64)
-    if werte.ndim != 2:
-        raise ValueError(
-            f"Erwartet wird eine Matrix (Zeile je Dokument, Spalte je Klasse), "
-            f"bekommen hat die Funktion {werte.ndim} Dimensionen."
-        )
-    return werte
-
-
-def _pruefe_form(
-    matrix: npt.NDArray[np.float64],
-    y_true: Sequence[str] | npt.NDArray[np.str_],
-    classes: Sequence[str],
-) -> None:
-    """Eine Zeile je Wahrheit, eine Spalte je Klasse.
-
-    Ohne diese Prüfung liefe ein Auseinanderlaufen von Spalten und ``classes`` lautlos
-    durch: Jede Konfidenz zeigte auf die falsche Klasse, und alle Zahlen blieben
-    trotzdem plausibel – dieselbe Falle, gegen die ``classify._klassen_pruefen`` steht.
-    Eine zu kurze ``y_true`` würde ohne sie stillschweigend abgeschnitten.
-    """
-    if matrix.shape[0] != len(y_true):
-        raise ValueError(
-            f"{matrix.shape[0]} Zeilen stehen {len(y_true)} bekannten Klassen gegenueber - "
-            "die Zuordnung waere sonst stillschweigend abgeschnitten."
-        )
-    if matrix.shape[1] != len(classes):
-        raise ValueError(
-            f"{matrix.shape[1]} Spalten fuer {len(classes)} Klassen - jede Konfidenz "
-            "zeigte sonst auf die falsche Klasse."
-        )
-
-
-def _klassenindex(
-    y_true: Sequence[str] | npt.NDArray[np.str_], classes: Sequence[str]
-) -> npt.NDArray[np.intp]:
-    """Die wahren Klassen als Spaltenindizes, in der Reihenfolge von ``classes``."""
-    spalte = {klasse: index for index, klasse in enumerate(classes)}
-    unbekannt = sorted({str(wert) for wert in y_true} - spalte.keys())
-    if unbekannt:
-        raise ValueError(
-            f"Die Wahrheit enthaelt unbekannte Klassen {unbekannt!r}, die in classes "
-            f"({list(classes)!r}) keine Spalte haben."
-        )
-    return np.array([spalte[str(wert)] for wert in y_true], dtype=np.intp)
 
 
 def fit_temperature(
@@ -136,9 +86,9 @@ def fit_temperature(
     rechnete stillschweigend mit ihr weiter. Deshalb ``ValueError`` und keine Warnung; eine
     Warnung kann überhört werden, ein Rückgabewert kann nicht befragt werden.
     """
-    werte = _als_float64(logits)
-    _pruefe_form(werte, y_true, classes)
-    ziel = _klassenindex(y_true, classes)
+    werte = als_float64(logits)
+    pruefe_form(werte, y_true, classes)
+    ziel = klassenindex(y_true, classes)
     zeilen = np.arange(werte.shape[0])
 
     def negative_log_likelihood(temperatur: float) -> float:
@@ -181,7 +131,7 @@ def apply_temperature(logits: Zahlenfeld, temperature: float) -> npt.NDArray[np.
             f"Temperatur {temperature!r} ist nicht groesser als 0. Ein negatives T kehrt "
             "die Rangfolge der Klassen um, ein T von 0 teilt durch null."
         )
-    werte = _als_float64(logits)
+    werte = als_float64(logits)
     ergebnis: npt.NDArray[np.float32] = np.asarray(
         softmax(werte / temperature, axis=1), dtype=np.float32
     )
@@ -217,8 +167,8 @@ def expected_calibration_error(
             f"{bins} Koerbe sind keine Einteilung - die Summe liefe ueber nichts und "
             "gaebe stillschweigend 0,0 zurueck."
         )
-    werte = _als_float64(proba)
-    _pruefe_form(werte, y_true, classes)
+    werte = als_float64(proba)
+    pruefe_form(werte, y_true, classes)
     zeilensummen = werte.sum(axis=1)
     if not np.allclose(zeilensummen, 1.0, atol=1e-4):
         raise ValueError(
@@ -231,7 +181,7 @@ def expected_calibration_error(
             "Jeder Wert muss zwischen 0 und 1 liegen - erwartet werden "
             f"Wahrscheinlichkeiten (gefunden: {werte.min():.4f} bis {werte.max():.4f})."
         )
-    ziel = _klassenindex(y_true, classes)
+    ziel = klassenindex(y_true, classes)
 
     konfidenz = werte.max(axis=1)
     treffer = (werte.argmax(axis=1) == ziel).astype(np.float64)

@@ -93,7 +93,7 @@ def _binaeren_score_erweitern(score: npt.NDArray[np.float64]) -> npt.NDArray[np.
     return score
 
 
-def _klassen_pruefen(schaetzer_klassen: Sequence[str], klassen: list[str]) -> None:
+def _klassenreihenfolge_pruefen(schaetzer_klassen: Sequence[str], klassen: list[str]) -> None:
     """Wirft, wenn der sklearn-Schätzer eine andere Klassenreihenfolge führt als
     ``klassen`` (``sorted(set(y))``). sklearn sortiert ``classes_`` selbst immer
     aufsteigend, genau wie ``sorted``, weshalb diese Prüfung im Normalfall nie greift –
@@ -218,7 +218,7 @@ def train_model(
             ]
         )
         pipeline_lr.fit(X, y_arr)
-        _klassen_pruefen([str(k) for k in pipeline_lr.classes_], klassen)
+        _klassenreihenfolge_pruefen([str(k) for k in pipeline_lr.classes_], klassen)
         coef = _als_klassen_x_merkmale(
             np.asarray(pipeline_lr.named_steps["schaetzer"].coef_, dtype=np.float64),
             len(klassen),
@@ -239,7 +239,7 @@ def train_model(
             ]
         )
         pipeline_svm.fit(X, y_arr)
-        _klassen_pruefen([str(k) for k in pipeline_svm.classes_], klassen)
+        _klassenreihenfolge_pruefen([str(k) for k in pipeline_svm.classes_], klassen)
         coef = _als_klassen_x_merkmale(
             np.asarray(pipeline_svm.named_steps["schaetzer"].coef_, dtype=np.float64),
             len(klassen),

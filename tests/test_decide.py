@@ -291,19 +291,12 @@ def test_ungleich_lange_eingaben_werden_abgelehnt() -> None:
 
 
 def test_wahrheitswerte_muessen_boolesch_sein() -> None:
-    """Ein Zahlenfeld statt eines booleschen ließe sich mitteln und ergäbe eine
-    „Präzision", die keine ist.
+    """Dass ``risk_coverage`` die Maskenprüfung anwendet (Regel: ``test_zahlen.py``).
 
     Der Fall ist nicht theoretisch: ``y_pred == y_true`` liefert booleschen Typ, eine
     Gewichtung oder eine Teilwertung (0,5 für „halb richtig") liefert Gleitkomma. Beides
     liefe durch ``mean()`` hindurch, und τ stünde danach auf einer Größe, die niemand
     Präzision genannt hätte.
-
-    Das ``cast`` ist der Kern des Tests, keine Umgehung: Es sagt genau aus, dass hier
-    bewusst etwas übergeben wird, was die Annotation ausschließt. mypy sieht nur
-    annotierte Aufrufstellen; ein Zahlenfeld kommt aus Polars, aus einer Gewichtung oder
-    aus einem ungeprüften Rand – und der Wächter steht für diesen Weg, nicht für den
-    statisch geprüften.
     """
     with pytest.raises(ValueError, match="boolesches Feld"):
         risk_coverage(
@@ -313,7 +306,8 @@ def test_wahrheitswerte_muessen_boolesch_sein() -> None:
 
 
 def test_nicht_endliche_konfidenzen_werden_abgelehnt() -> None:
-    """``NaN`` sortiert sich ans Ende und zöge die Kurve stillschweigend schief."""
+    """Dass ``risk_coverage`` die Reihenprüfung anwendet (Regel: ``test_zahlen.py``).
+    ``NaN`` sortiert sich ans Ende und zöge die Kurve stillschweigend schief."""
     with pytest.raises(ValueError, match="endlich"):
         risk_coverage(np.array([0.9, np.nan, 0.7]), np.array([True, False, True]))
 

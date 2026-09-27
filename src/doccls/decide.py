@@ -60,52 +60,7 @@ import numpy.typing as npt
 from scipy.special import xlogy
 
 from doccls.models import RESIDUAL_CLASS_KEY, VERTEILUNGS_TOLERANZ, Decision, Prediction
-
-Zahlenreihe = npt.NDArray[np.float32] | npt.NDArray[np.float64]
-Zahlenfeld = npt.NDArray[np.float32] | npt.NDArray[np.float64]
-
-
-def _als_reihe(werte: Zahlenreihe, name: str) -> npt.NDArray[np.float64]:
-    """Eindimensional, nicht leer, endlich – in doppelter Genauigkeit.
-
-    ``NaN`` sortiert in NumPy ans Ende und wäre in einer nach Konfidenz sortierten Kurve
-    unsichtbar: Die Schwelle verschöbe sich lautlos.
-    """
-    reihe = np.asarray(werte, dtype=np.float64)
-    if reihe.ndim != 1:
-        raise ValueError(
-            f"{name} muss eindimensional sein (ein Wert je Dokument), hat aber "
-            f"{reihe.ndim} Dimensionen."
-        )
-    if reihe.size == 0:
-        raise ValueError(f"{name} ist leer - aus nichts laesst sich keine Schwelle ablesen.")
-    if not np.isfinite(reihe).all():
-        raise ValueError(
-            f"{name} enthaelt Werte, die nicht endlich sind (NaN oder inf). Sie sortieren "
-            "sich stillschweigend ans Ende und verschoeben die Schwelle."
-        )
-    return reihe
-
-
-def _als_maske(werte: npt.NDArray[np.bool_], name: str) -> npt.NDArray[np.bool_]:
-    """Richtig oder falsch – nichts dazwischen.
-
-    Ein Gleitkommafeld mit 0,5 darin ließe sich rechnen und ergäbe eine „Präzision", die
-    keine ist. Deshalb wird der Typ verlangt statt umgedeutet.
-    """
-    maske = np.asarray(werte)
-    if maske.dtype != np.bool_:
-        raise ValueError(
-            f"{name} muss ein boolesches Feld sein (richtig oder falsch je Dokument), hat "
-            f"aber den Typ {maske.dtype}. Ein Zahlenfeld ergaebe eine Praezision, die "
-            "keine ist."
-        )
-    if maske.ndim != 1:
-        raise ValueError(
-            f"{name} muss eindimensional sein (ein Wert je Dokument), hat aber "
-            f"{maske.ndim} Dimensionen."
-        )
-    return maske
+from doccls.zahlen import Zahlenfeld, Zahlenreihe, als_maske, als_reihe
 
 
 def _kurve(
@@ -125,8 +80,8 @@ def _kurve(
     Die Reihenfolge ist aufsteigend in der Abdeckung, also **absteigend** im Schwellwert;
     der letzte Eintrag ist die unterste Schwelle mit voller Abdeckung.
     """
-    konfidenz = _als_reihe(confidences, "confidences")
-    richtig = _als_maske(correct, "correct")
+    konfidenz = als_reihe(confidences, "confidences")
+    richtig = als_maske(correct, "correct")
     if konfidenz.size != richtig.size:
         raise ValueError(
             f"{konfidenz.size} Konfidenzen stehen {richtig.size} Wahrheitswerten "
@@ -397,7 +352,7 @@ def delta_for_percentile(scores: Zahlenreihe, percentile: float = 95.0) -> float
             f"Das Perzentil {percentile!r} liegt nicht echt zwischen 0 und 100. 100 waere "
             "das Maximum - ein delta darauf lehnt per Bauart nichts ab -, 0 das Minimum."
         )
-    werte = _als_reihe(scores, "scores")
+    werte = als_reihe(scores, "scores")
     mindestens = _mindestzahl_fuer_perzentil(percentile)
     if werte.size < mindestens:
         raise ValueError(
@@ -428,7 +383,7 @@ def _als_verteilung(proba: Zahlenreihe, klassenzahl: int) -> npt.NDArray[np.floa
     ``classify.decision_scores``, die ebenfalls ein Feld je Klasse sind und deshalb
     versehentlich hierher geraten können.
     """
-    verteilung = _als_reihe(proba, "proba")
+    verteilung = als_reihe(proba, "proba")
     if verteilung.size != klassenzahl:
         raise ValueError(
             f"proba hat {verteilung.size} Eintraege, classes nennt {klassenzahl} Klassen. "
