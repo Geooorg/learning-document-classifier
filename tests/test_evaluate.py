@@ -304,6 +304,11 @@ def test_coverage_at_precision_folgt_dem_ziel() -> None:
     assert evaluate(proba, y, klassen, target_precision=0.9).coverage_at_precision == (
         pytest.approx(0.6)
     )
+    # Genau auf der Kante: Die Gesamtpraezision ist 0,8. "Haelt das Ziel" heisst >=, nicht
+    # >; mit > bliebe nur die Abdeckung 0,6 uebrig.
+    assert evaluate(proba, y, klassen, target_precision=0.8).coverage_at_precision == (
+        pytest.approx(1.0)
+    )
 
 
 def test_coverage_ist_null_wenn_kein_ziel_haelt() -> None:
