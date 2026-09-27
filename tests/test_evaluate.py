@@ -52,6 +52,7 @@ import pytest
 from pydantic import ValidationError
 
 from doccls.calibrate import apply_temperature
+from doccls.decide import risk_coverage
 from doccls.evaluate import Metrics, bootstrap_ci, confusion, evaluate
 
 KLASSEN_ZWEI = ("a", "b")
@@ -141,10 +142,10 @@ def _gemischte_vorhersagen(
     return logits, [klassen[index] for index in wahr], klassen
 
 
-def _gemischte_wahrscheinlichkeiten(
+def _drei_klassen_logits(
     seed: int, n: int = 400
-) -> tuple[npt.NDArray[np.float32], list[str], list[str]]:
-    """Kalibrierte Wahrscheinlichkeiten über drei **gleich besetzte** Klassen.
+) -> tuple[npt.NDArray[np.float64], list[str], list[str]]:
+    """Rohe Logits über drei **gleich besetzte** Klassen.
 
     Die Gleichbesetzung ist kein Zierrat: Der Bootstrap zieht über die Zeilen, und eine
     dünn besetzte Klasse fehlte in manchen Ziehungen ganz – ``evaluate`` wirft dann (zu
@@ -156,7 +157,15 @@ def _gemischte_wahrscheinlichkeiten(
     wahr = rng.permutation(np.arange(n) % len(klassen))
     logits: npt.NDArray[np.float64] = rng.normal(0.0, 1.0, (n, len(klassen)))
     logits[np.arange(n), wahr] += rng.normal(1.6, 1.0, n)
-    return apply_temperature(logits, 1.0), [klassen[index] for index in wahr], klassen
+    return logits, [klassen[index] for index in wahr], klassen
+
+
+def _gemischte_wahrscheinlichkeiten(
+    seed: int, n: int = 400
+) -> tuple[npt.NDArray[np.float32], list[str], list[str]]:
+    """Dieselben Logits, bei ``T = 1`` in kalibrierte Wahrscheinlichkeiten umgerechnet."""
+    logits, y, klassen = _drei_klassen_logits(seed, n)
+    return apply_temperature(logits, 1.0), y, klassen
 
 
 def _konfidenz_trennt_gut(
@@ -402,6 +411,98 @@ def test_aurc_faellt_wenn_die_konfidenz_besser_trennt() -> None:
     assert b.aurc == pytest.approx(1.0 - a.accuracy, abs=0.03), (
         "Bei entkoppelter Konfidenz ist das Risiko auf jeder Abdeckung ungefaehr die "
         "Gesamtfehlerquote - so weit ist die Flaeche vorab bekannt"
+    )
+
+
+def test_aurc_bewertet_eine_nichts_trennende_konfidenz_nicht_besser() -> None:
+    """Der Befund, der die Kennzahl umgedreht hatte.
+
+    Vier Zeilen, alle mit derselben Konfidenz, zwei davon richtig: Die Konfidenz trennt
+    **nichts**. ``decide._kurve`` legt dafür einen einzigen Punkt an (Abdeckung 1,0), und
+    eine Fläche nur über die *beobachteten* Punkte ist dann 0 – der bestmögliche Wert für
+    die nutzloseste Konfidenz. Gemessen ergab die alte Rechnung genau das: 0,0000.
+
+    Gegenprobe ist ein Verlauf mit **derselben** Genauigkeit, dessen Konfidenz trennt. Er
+    muss besser dastehen, nicht schlechter.
+    """
+    gesaettigt = _sichere_vorhersage(["a", "a", "b", "b"], KLASSEN_ZWEI)
+    trennend = _proba(["a", "b", "a", "b"], [0.99, 0.95, 0.90, 0.85], KLASSEN_ZWEI)
+    y = ["a", "b", "b", "a"]
+    ohne_trennung = evaluate(gesaettigt, y, KLASSEN_ZWEI)
+    mit_trennung = evaluate(trennend, y, KLASSEN_ZWEI)
+
+    assert ohne_trennung.accuracy == pytest.approx(0.5)
+    assert mit_trennung.accuracy == pytest.approx(0.5)
+    assert mit_trennung.aurc < ohne_trennung.aurc, (
+        "Eine Konfidenz, die nichts trennt, darf nicht besser dastehen als eine, die "
+        "trennt - sonst belohnt die AURC gesaettigte float32-Wahrscheinlichkeiten"
+    )
+    # Von Hand: ein Punkt (1,0 | Risiko 0,5), von Abdeckung 0 bis 1 waagerecht.
+    assert ohne_trennung.aurc == pytest.approx(0.5)
+    # Punkte (0,25 | 0) (0,5 | 0) (0,75 | 1/3) (1,0 | 0,5), davor (0 | 0):
+    # 0,25*(0 + 1/3)/2 + 0,25*(1/3 + 0,5)/2
+    assert mit_trennung.aurc == pytest.approx(0.25 * (1 / 3) / 2 + 0.25 * (1 / 3 + 0.5) / 2)
+
+
+def test_aurc_bei_einem_einzigen_kurvenpunkt_ist_die_fehlerquote() -> None:
+    """Der Randfall der Trapezregel: Über einem einzigen Punkt gibt es keine Stützstelle,
+    zwischen der integriert werden könnte, und ``np.trapezoid`` liefert 0.
+
+    Die Fläche läuft deshalb von Abdeckung 0 bis 1 und schließt bei 0 mit dem Risiko des
+    obersten Punktes an. Bei nur einem Punkt ist die Kurve damit waagerecht auf der
+    Gesamtfehlerquote – die einzige Aussage, die eine nicht trennende Konfidenz zulässt.
+    """
+    proba = _sichere_vorhersage(["a"] * 4 + ["b"], KLASSEN_ZWEI)
+    y = ["a"] * 4 + ["a"]
+    abdeckung, _ = risk_coverage(proba.max(axis=1), np.array([True] * 4 + [False]))
+    assert abdeckung.tolist() == [1.0], "Voraussetzung des Tests: genau ein Kurvenpunkt"
+    m = evaluate(proba, y, KLASSEN_ZWEI)
+    assert m.accuracy == pytest.approx(0.8)
+    assert m.aurc == pytest.approx(0.2)
+
+
+def test_aurc_trifft_die_handrechnung_eines_gestuften_verlaufs() -> None:
+    """Ein gestufter Verlauf, dessen oberster Punkt schon Risiko trägt – erst daran ist
+    ablesbar, ob der Anschluss bei Abdeckung 0 mitgerechnet wird.
+
+    Vier Zeilen, Konfidenzen 0,9 / 0,9 / 0,8 / 0,8, die zweite falsch. Die Kurve hat zwei
+    Punkte: (0,5 | Präzision 0,5) und (1,0 | Präzision 0,75), also die Risiken 0,5 und
+    0,25. Von Hand: ``0,5 · (0,5 + 0,5)/2 + 0,5 · (0,5 + 0,25)/2 = 0,4375``. Nur über die
+    beobachteten Punkte wären es 0,1875 – dieselbe Kurve, die falsche Zahl.
+    """
+    proba = _proba(["a", "b", "a", "b"], [0.9, 0.9, 0.8, 0.8], KLASSEN_ZWEI)
+    m = evaluate(proba, ["a", "a", "a", "b"], KLASSEN_ZWEI)
+    assert m.accuracy == pytest.approx(0.75)
+    assert m.aurc == pytest.approx(0.4375)
+
+
+def test_saettigung_bewegt_auroc_und_aurc_sehr_wohl() -> None:
+    """Die Richtigstellung zum Moduldoc: ``auroc_confidence`` und ``aurc`` sind Rangmaße
+    und damit gegen eine **exakt** gerechnete Temperatur unempfindlich – aber
+    ``apply_temperature`` liefert ``float32``, und bei kleinem ``T`` sättigt der Softmax.
+    Aus verschiedenen Konfidenzen werden dann gleiche, und Gleichstände sind für ein
+    Rangmaß etwas anderes als eine Ordnung.
+
+    Gemessen auf 300 Dokumenten, drei Klassen, Seed 3 (``_drei_klassen_logits``): bei
+    ``T = 1`` sind alle 300 Konfidenzen verschieden, bei ``T = 0,05`` nur noch 108. Die
+    Genauigkeit bleibt bei 0,753, die AUROC fällt von 0,802 auf 0,721 und die AURC steigt
+    von 0,089 auf 0,144. ``T = 0,05`` ist ausgerechnet die Untergrenze, in die
+    ``fit_temperature`` auf dem echten Bestand läuft.
+    """
+    logits, y, klassen = _drei_klassen_logits(seed=3, n=300)
+    warm = apply_temperature(logits, 1.0)
+    kalt = apply_temperature(logits, 0.05)
+    assert len(np.unique(warm.max(axis=1))) == 300
+    assert len(np.unique(kalt.max(axis=1))) < 200, "Voraussetzung: float32 saettigt wirklich"
+
+    a = evaluate(warm, y, klassen)
+    b = evaluate(kalt, y, klassen)
+    assert a.accuracy == pytest.approx(b.accuracy), "Die Temperatur aendert keine Entscheidung"
+    assert a.auroc_confidence is not None and b.auroc_confidence is not None
+    assert b.auroc_confidence < a.auroc_confidence - 0.05
+    assert b.aurc > a.aurc + 0.02, (
+        "Die Saettigung vernichtet Information - die AURC muss dabei steigen und darf "
+        "nicht, wie vor der Korrektur, auf 0,074 fallen"
     )
 
 

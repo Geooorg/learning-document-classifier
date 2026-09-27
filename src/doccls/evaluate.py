@@ -13,6 +13,20 @@ Dasselbe gilt für ``auroc_confidence`` und ``aurc`` – alle drei sind Rangmaß
 ist es ausdrücklich **nicht**; er misst die Zahlenwerte und muss sich unter Temperatur
 bewegen. Beides ist in ``tests/test_evaluate.py`` gemessen, nicht geglaubt.
 
+**Rangmaß heißt nicht temperaturfest.** Hier stand, die drei Rangmaße bewegten sich unter
+Temperatur nicht – und das ist selbst bei zwei Klassen falsch, sobald ``float32`` sättigt.
+``apply_temperature`` gibt ``float32`` zurück; bei kleinem ``T`` laufen verschiedene
+Konfidenzen auf denselben Wert zusammen, und ein Gleichstand ist für ein Rangmaß etwas
+anderes als eine Ordnung. Gemessen auf 300 Dokumenten, drei Klassen, Seed 3::
+
+    T = 1,00   Genauigkeit 0,753   AURC 0,0891   AUROC 0,8017   verschiedene Konfidenzen 300/300
+    T = 0,05   Genauigkeit 0,753   AURC 0,1441   AUROC 0,7214   verschiedene Konfidenzen 108/300
+
+Die Genauigkeit steht still, die beiden Rangmaße nicht. Richtig ist: Sie lassen sich durch
+Temperatur nicht *verbessern*; sie verschlechtern sich, wo die Zahlendarstellung die
+Ordnung einebnet. Gebunden in ``test_saettigung_bewegt_auroc_und_aurc_sehr_wohl``. Die
+AURC hat das bis zur Korrektur in :func:`_aurc` sogar umgekehrt belohnt.
+
 **Die Konfusionsmatrix trägt hier mehr als jede Einzelzahl** (:func:`confusion`).
 Rechnung↔Gutschrift und Vertrag↔AGB sind völlig verschiedene Probleme, und in welche
 Richtung verwechselt wird, steht in keiner gemittelten Kennzahl.
@@ -145,7 +159,8 @@ class Metrics(BaseModel):
     nll: float = Field(ge=0.0, le=NLL_OBERGRENZE)
     coverage_at_precision: float = Field(ge=0.0, le=1.0)
     aurc: float = Field(ge=0.0, le=1.0)
-    """Fläche unter der Risiko-Abdeckungs-Kurve, Trapezregel. **Kleiner ist besser.**"""
+    """Fläche unter der Risiko-Abdeckungs-Kurve, Trapezregel über die volle Abdeckung von
+    0 bis 1 (:func:`_aurc`). **Kleiner ist besser.**"""
 
     auroc_confidence: float | None = Field(ge=0.0, le=1.0)
     n: int = Field(ge=1)
@@ -285,7 +300,7 @@ def evaluate(
     abdeckung, praezision = risk_coverage(konfidenz, richtig)
     haelt = praezision >= target_precision
     coverage = float(abdeckung[haelt].max()) if bool(haelt.any()) else 0.0
-    aurc = float(np.trapezoid(1.0 - praezision, abdeckung))
+    aurc = _aurc(abdeckung, praezision)
 
     return Metrics(
         macro_f1=float(np.mean(klassenwerte)),
@@ -299,6 +314,34 @@ def evaluate(
         auroc_confidence=_auroc(konfidenz, richtig),
         n=int(werte.shape[0]),
     )
+
+
+def _aurc(abdeckung: npt.NDArray[np.float64], praezision: npt.NDArray[np.float64]) -> float:
+    """Die Fläche unter der Risiko-Abdeckungs-Kurve, **von Abdeckung 0 bis 1**.
+
+    Der Zusatz ist der ganze Punkt. ``decide._kurve`` legt Punkte nur an Gruppengrenzen
+    gleicher Konfidenz; der erste Punkt liegt also nicht bei Abdeckung 0, sondern bei der
+    Abdeckung der konfidentesten Gruppe. Eine Trapezregel nur über die *beobachteten*
+    Punkte integriert damit über ein Stück Kurve, dessen Länge von der Zahl der
+    Gleichstände abhängt – und bei einem einzigen Kurvenpunkt über gar nichts: Sie ergibt
+    0, den bestmöglichen Wert, für eine Konfidenz, die **nichts** trennt.
+
+    Das ist kein Laborfall. ``calibrate.apply_temperature`` liefert ``float32``, und bei
+    kleinem ``T`` sättigt der Softmax; gemessen auf 300 Dokumenten (drei Klassen, Seed 3)
+    sind bei ``T = 0,05`` nur noch 108 der 300 Konfidenzen verschieden, und die alte
+    Rechnung meldete dafür 0,0741 gegen 0,0891 bei ``T = 1`` – eine *Verbesserung*, obwohl
+    Information vernichtet wurde. ``T = 0,05`` ist die Untergrenze, in die
+    ``fit_temperature`` auf dem echten Bestand tatsächlich läuft.
+
+    Bei Abdeckung 0 wird deshalb mit dem Risiko des obersten Punktes angeschlossen. Das
+    ist die einzige Fortsetzung, die nichts hinzuerfindet: Über der konfidentesten Gruppe
+    gibt es keine feinere Beobachtung, und innerhalb einer Gruppe gleicher Konfidenz kann
+    keine Schwelle trennen – das Risiko ist dort konstant. Bei einem einzigen Punkt ergibt
+    sich so die Gesamtfehlerquote, die einzige Aussage, die eine nicht trennende Konfidenz
+    zulässt.
+    """
+    risiko = 1.0 - praezision
+    return float(np.trapezoid(np.r_[risiko[0], risiko], np.r_[0.0, abdeckung]))
 
 
 def _auroc(konfidenz: npt.NDArray[np.float64], richtig: npt.NDArray[np.bool_]) -> float | None:
