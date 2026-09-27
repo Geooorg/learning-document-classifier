@@ -45,7 +45,7 @@ und die zweite wäre die ungepflegte.
 
 import math
 from collections.abc import Sequence
-from typing import Self
+from typing import NamedTuple, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -213,6 +213,22 @@ def _klassenliste_pruefen(classes: Sequence[str]) -> list[str]:
     return namen
 
 
+def _ziel_pruefen(target_precision: float) -> None:
+    """Das Präzisionsziel liegt echt zwischen 0 und 1.
+
+    Steht hier und nicht zweimal, weil :func:`bootstrap_ci` dasselbe Ziel weiterreicht und
+    es **vor** der Schleife prüfen muss: Dort werden entartete Ziehungen übersprungen, und
+    ein unmögliches Ziel ließe jede Ziehung als „entartet" gelten – gemeldet würde dann
+    eine zu dünn besetzte Menge statt des falschen Arguments.
+    """
+    if not 0.0 < target_precision < 1.0:
+        raise ValueError(
+            f"target_precision={target_precision!r} liegt nicht echt zwischen 0 und 1. Ein "
+            "Ziel von 1,0 ist auf endlich vielen Dokumenten nicht ablesbar, ein Ziel von 0 "
+            "ist keine Anforderung."
+        )
+
+
 def evaluate(
     proba: Zahlenfeld,
     y_true: Sequence[str] | npt.NDArray[np.str_],
@@ -256,12 +272,7 @@ def evaluate(
             "Keine Dokumente uebergeben. Ueber die leere Menge ist keine Kennzahl "
             "gebildet, und jede zurueckgegebene Zahl waere erfunden."
         )
-    if not 0.0 < target_precision < 1.0:
-        raise ValueError(
-            f"target_precision={target_precision!r} liegt nicht echt zwischen 0 und 1. Ein "
-            "Ziel von 1,0 ist auf endlich vielen Dokumenten nicht ablesbar, ein Ziel von 0 "
-            "ist keine Anforderung."
-        )
+    _ziel_pruefen(target_precision)
 
     ziel = klassenindex(y_true, namen)
     vorhergesagt = werte.argmax(axis=1)
@@ -434,14 +445,36 @@ BOOTSTRAP_METRIKEN = (
 )
 
 
+class BootstrapIntervall(NamedTuple):
+    """Das Ergebnis von :func:`bootstrap_ci`: die beiden Grenzen **und** die Zahl der
+    übersprungenen Ziehungen.
+
+    **Warum die dritte Zahl im Rückgabewert steht und nicht in einer zweiten Funktion.**
+    Sie ist ein Befund über den Bestand – „auf dieser Menge trifft jede dritte Ziehung eine
+    Klasse nicht mehr" –, und er gilt genau für *diese* Ziehungsreihe. Eine zweite
+    Funktion müsste dieselbe Reihe ein zweites Mal ziehen; sie wäre bei gleichem Seed
+    dieselbe, bei anderem eine andere, und nichts hielte den Aufrufer davon ab, die Zahl
+    zu einem Intervall zu stellen, zu dem sie nicht gehört. Hier ist die Trennung nicht
+    möglich.
+
+    Dass das Auspacken in zwei Namen (``unten, oben = ...``) dadurch bricht, ist Absicht:
+    Ein stillschweigend weiterlaufender Aufrufer wäre genau der, der die Zahl nie sähe.
+    """
+
+    unten: float
+    oben: float
+    uebersprungen: int
+
+
 def bootstrap_ci(
     proba: Zahlenfeld,
     y_true: Sequence[str] | npt.NDArray[np.str_],
     classes: Sequence[str],
     metric: str,
+    target_precision: float = 0.98,
     rounds: int = 1000,
     seed: int = 7,
-) -> tuple[float, float]:
+) -> BootstrapIntervall:
     """95-%-Bootstrap-Intervall einer Kennzahl – das 2,5- und das 97,5-Perzentil.
 
     ``rounds`` Ziehungen mit Zurücklegen über die **Zeilen** (Dokument samt Wahrheit
@@ -452,15 +485,28 @@ def bootstrap_ci(
     Konzept § 9.2 begründet die 50 Dokumente je Klasse damit, dass Unterschiede sonst im
     Rauschen verschwinden – das Intervall ist die Zahl, an der man das sieht.
 
-    ``coverage_at_precision`` wird mit dem Startziel 0,98 gezogen; ein eigenes
-    ``target_precision`` hat diese Schnittstelle nicht.
+    ``target_precision`` wird an :func:`evaluate` durchgereicht und wirkt auf
+    ``coverage_at_precision``; die Vorgabe ist dieselbe 0,98.
 
-    **Eine entartete Ziehung wird geworfen, nicht übergangen.** Trifft eine Ziehung eine
-    Klasse weder in der Wahrheit noch in den Vorhersagen, ist deren F1 undefiniert
-    (:func:`evaluate`). Solche Ziehungen zu überspringen verschöbe das Intervall
-    stillschweigend – es wäre dann auf eine andere Verteilung bedingt als die genannte.
-    Geworfen wird stattdessen mit der Nummer der Ziehung, weil der Fall bedeutet, dass die
-    Menge für einen Bootstrap über die Zeilen zu dünn besetzt ist.
+    **Eine entartete Ziehung wird übersprungen und gezählt.** Trifft eine Ziehung eine
+    Klasse weder in der Wahrheit noch in den Vorhersagen, ist deren F1 undefiniert, und
+    :func:`evaluate` wirft – zu Recht, denn eine Kennzahl über eine abwesende Klasse gibt
+    es nicht. Hier darf das die Funktion aber nicht zum Erliegen bringen: Auf dem echten
+    Gold-Set (fünf Vorlagen je Klasse) passiert es zuverlässig, und dann wäre der
+    Bootstrap genau in dem Fall unbrauchbar, für den es ihn gibt.
+
+    Das Intervall ist dadurch auf die Ziehungen **bedingt, in denen jede Klasse vorkommt**.
+    Das ist eine andere Verteilung als die unbedingte, und deshalb verschwindet die Zahl
+    der übersprungenen Ziehungen nicht: Sie steht als
+    :attr:`BootstrapIntervall.uebersprungen` im Rückgabewert (Begründung dort) und ist ein
+    Befund über den Bestand, nicht ein Betriebsdetail. Wer 60 von 200 Ziehungen verliert,
+    liest an dieser Zahl, dass seine Menge zu dünn besetzt ist – und nicht an einer
+    Ausnahme, die ihm die Auswertung ganz verweigert.
+
+    **Geworfen wird erst, wenn zu wenige brauchbare Ziehungen übrig bleiben.** Unter
+    :data:`MINDESTZIEHUNGEN` sitzen beide Perzentile auf dem kleinsten und größten Wert,
+    und das gilt für die *brauchbaren* Ziehungen genauso wie für ``rounds``. Die Meldung
+    nennt beide Zahlen, damit ablesbar ist, ob mehr Ziehungen helfen oder mehr Dokumente.
     """
     if metric not in BOOTSTRAP_METRIKEN:
         raise ValueError(
@@ -477,30 +523,42 @@ def bootstrap_ci(
     werte = als_float64(proba)
     namen = _klassenliste_pruefen(classes)
     pruefe_form(werte, y_true, namen)
+    _ziel_pruefen(target_precision)
     wahrheit = np.asarray([str(wert) for wert in y_true], dtype=np.str_)
     if wahrheit.size == 0:
         raise ValueError("Keine Dokumente uebergeben - aus nichts wird nicht gezogen.")
 
     rng = np.random.default_rng(seed)
-    gezogen = np.empty(rounds, dtype=np.float64)
+    brauchbar: list[float] = []
+    uebersprungen = 0
     for runde in range(rounds):
         index = rng.integers(0, wahrheit.size, wahrheit.size)
         try:
-            kennzahl = getattr(evaluate(werte[index], list(wahrheit[index]), namen), metric)
-        except ValueError as fehler:
-            raise ValueError(
-                f"Ziehung {runde} von {rounds} ist entartet: {fehler} Bei {wahrheit.size} "
-                "Dokumenten trifft eine Ziehung mit Zuruecklegen eine duenn besetzte Klasse "
-                "nicht mehr; sie zu ueberspringen verschoebe das Intervall stillschweigend."
-            ) from fehler
+            gemessen = evaluate(
+                werte[index], list(wahrheit[index]), namen, target_precision=target_precision
+            )
+        except ValueError:
+            uebersprungen += 1
+            continue
+        kennzahl = getattr(gemessen, metric)
         if kennzahl is None:
             raise ValueError(
                 f"Ziehung {runde} von {rounds} liefert fuer {metric!r} keinen Wert (alle "
                 "Vorhersagen richtig oder alle falsch). Ein eingesetzter Ersatzwert ginge "
                 "als Messung ins Intervall ein."
             )
-        gezogen[runde] = float(kennzahl)
+        brauchbar.append(float(kennzahl))
 
+    if len(brauchbar) < MINDESTZIEHUNGEN:
+        raise ValueError(
+            f"Von {rounds} Ziehungen sind {uebersprungen} entartet (eine Klasse kam weder "
+            f"in der Wahrheit noch unter den Vorhersagen vor); {len(brauchbar)} brauchbare "
+            f"bleiben uebrig, noetig sind {MINDESTZIEHUNGEN}. Bei {wahrheit.size} "
+            "Dokumenten trifft eine Ziehung mit Zuruecklegen eine duenn besetzte Klasse "
+            "nicht mehr - hier helfen mehr Dokumente und nicht mehr Ziehungen."
+        )
+
+    gezogen = np.asarray(brauchbar, dtype=np.float64)
     unten = float(np.percentile(gezogen, UNTERES_PERZENTIL, method="linear"))
     oben = float(np.percentile(gezogen, OBERES_PERZENTIL, method="linear"))
-    return unten, oben
+    return BootstrapIntervall(unten, oben, uebersprungen)

@@ -624,9 +624,10 @@ def test_konfusionsmatrix_weist_ungleiche_laengen_ab() -> None:
 def test_bootstrap_intervall_umschliesst_den_punktwert() -> None:
     proba, y, klassen = _gemischte_wahrscheinlichkeiten(seed=13)
     punkt = evaluate(proba, y, klassen).macro_f1
-    unten, oben = bootstrap_ci(proba, y, klassen, metric="macro_f1", rounds=200)
+    unten, oben, uebersprungen = bootstrap_ci(proba, y, klassen, metric="macro_f1", rounds=200)
     assert unten <= punkt <= oben
     assert unten < oben, "Ein Punktintervall waere keine Streuung"
+    assert uebersprungen == 0, "Auf gleich besetzten Klassen entartet keine Ziehung"
 
 
 def test_bootstrap_ist_bei_kleiner_menge_breiter() -> None:
@@ -671,7 +672,7 @@ def test_bootstrap_liefert_ein_95_prozent_intervall() -> None:
     y = ["a"] * 320 + ["b"] * 80
     proba = _proba(["a"] * 400, [0.9] * 400, klassen)
     assert evaluate(proba, y, klassen).accuracy == pytest.approx(0.8)
-    unten, oben = bootstrap_ci(proba, y, klassen, "accuracy", rounds=1000)
+    unten, oben, _ = bootstrap_ci(proba, y, klassen, "accuracy", rounds=1000)
     erwartet = 2 * 1.96 * math.sqrt(0.8 * 0.2 / 400)
     assert oben - unten == pytest.approx(erwartet, rel=0.12)
 
@@ -692,15 +693,88 @@ def test_bootstrap_weist_eine_unbekannte_kennzahl_ab() -> None:
         bootstrap_ci(proba, y, klassen, "f1_macro", rounds=40)
 
 
-def test_bootstrap_wirft_bei_einer_entarteten_ziehung() -> None:
-    """Eine Klasse, die eine Ziehung gar nicht trifft, hat keine F1. Solche Ziehungen zu
-    ueberspringen verschoebe das Intervall stillschweigend."""
+def _duenn_besetzt() -> tuple[npt.NDArray[np.float64], list[str], tuple[str, ...]]:
+    """Sechs Zeilen, eine davon die einzige ``GUTSCHRIFT`` – der Fall des echten Gold-Sets.
+
+    Auf der vollen Menge ist jede Kennzahl definiert (Macro-F1 1,0); erst die Ziehung mit
+    Zurücklegen trifft die einzelne Zeile manchmal gar nicht. Die Wahrscheinlichkeit dafür
+    ist ``(5/6)^6 = 0,3349`` je Ziehung – vorher ausgerechnet, nicht aus dem Ergebnis
+    abgelesen.
+    """
     proba = _sichere_vorhersage(["RECHNUNG"] * 5 + ["GUTSCHRIFT"], KLASSEN_BELEG)
-    y = ["RECHNUNG"] * 5 + ["GUTSCHRIFT"]
-    # Auf der vollen Menge ist alles definiert - erst die Ziehung entartet.
-    assert evaluate(proba, y, KLASSEN_BELEG).macro_f1 == pytest.approx(1.0)
-    with pytest.raises(ValueError, match="entartet"):
-        bootstrap_ci(proba, y, KLASSEN_BELEG, "macro_f1", rounds=40)
+    return proba, ["RECHNUNG"] * 5 + ["GUTSCHRIFT"], KLASSEN_BELEG
+
+
+def test_bootstrap_ueberspringt_entartete_ziehungen_und_zaehlt_sie() -> None:
+    """Auf dem echten Gold-Set (fuenf Vorlagen je Klasse) entartet ein Teil der Ziehungen
+    zuverlaessig. Daran zu scheitern machte die Funktion in genau dem Fall unbrauchbar,
+    fuer den es sie gibt – also wird uebersprungen. Die Zahl der Uebersprungenen darf dabei
+    nicht verschwinden: Sie sagt, dass die Menge zu duenn besetzt ist."""
+    proba, y, klassen = _duenn_besetzt()
+    assert evaluate(proba, y, klassen).macro_f1 == pytest.approx(1.0)
+
+    ergebnis = bootstrap_ci(proba, y, klassen, "macro_f1", rounds=200)
+    assert ergebnis.uebersprungen > 0, "Diese Menge muss entartete Ziehungen erzeugen"
+    # Gegen den analytisch bekannten Anteil, nicht gegen "irgendeine Zahl groesser 0":
+    # eine Zaehlung, die etwas anderes zaehlt (etwa alle Ziehungen), faellt hier auf.
+    assert ergebnis.uebersprungen / 200 == pytest.approx((5 / 6) ** 6, abs=0.08)
+    # Die uebrigen 136 Ziehungen treffen beide Klassen und sind dort samt und sonders
+    # fehlerfrei - das Intervall ist deshalb ein Punkt, und das ist die richtige Antwort.
+    assert (ergebnis.unten, ergebnis.oben) == (1.0, 1.0)
+
+    # Gegenprobe: Auf gleich besetzten Klassen wird nichts uebersprungen.
+    gesund = _gemischte_wahrscheinlichkeiten(seed=13, n=400)
+    assert bootstrap_ci(*gesund, "macro_f1", rounds=200).uebersprungen == 0
+
+
+def test_bootstrap_wirft_wenn_zu_wenige_brauchbare_ziehungen_bleiben() -> None:
+    """Der zweite Waechter: Unter 40 **brauchbaren** Ziehungen sitzen beide Perzentile auf
+    dem kleinsten und groessten Wert – dieselbe Ueberlegung wie bei ``rounds``, nur auf die
+    Ziehungen angewandt, die ueberhaupt gezaehlt haben.
+
+    Bei 40 Ziehungen auf sechs Dokumenten entarten (Seed 7) zehn, es bleiben 30. Die
+    Meldung nennt beide Zahlen, damit ablesbar ist, ob mehr Ziehungen helfen.
+    """
+    proba, y, klassen = _duenn_besetzt()
+    with pytest.raises(ValueError, match="30 brauchbare bleiben uebrig, noetig sind 40"):
+        bootstrap_ci(proba, y, klassen, "macro_f1", rounds=40)
+    # Mit genug Ziehungen bleiben genug brauchbare uebrig - der Waechter blockiert nicht
+    # den Fall, fuer den das Ueberspringen gebaut ist.
+    assert bootstrap_ci(proba, y, klassen, "macro_f1", rounds=200).uebersprungen > 0
+
+
+def test_bootstrap_zieht_die_coverage_mit_dem_uebergebenen_ziel() -> None:
+    """Vertragsentscheidung: ``bootstrap_ci`` bekommt ein eigenes ``target_precision`` mit
+    derselben Vorgabe wie ``evaluate``. Ohne den Parameter zog der Bootstrap die Coverage
+    immer mit 0,98, gleich was ausgewertet wurde.
+
+    Gemessen (Seed 13, 400 Dokumente, 200 Ziehungen): bei 0,98 liegt das Intervall bei
+    [0,235; 0,480], bei 0,90 bei [0,525; 0,703]. Die beiden ueberschneiden sich nicht.
+    """
+    proba, y, klassen = _gemischte_wahrscheinlichkeiten(seed=13, n=400)
+    streng = bootstrap_ci(proba, y, klassen, "coverage_at_precision", rounds=200)
+    milde = bootstrap_ci(
+        proba, y, klassen, "coverage_at_precision", target_precision=0.90, rounds=200
+    )
+    assert streng.oben < milde.unten, (
+        "Ein niedrigeres Praezisionsziel muss mehr Dokumente abdecken - tut es das nicht, "
+        "wird der Parameter nicht durchgereicht"
+    )
+    # Und die Vorgabe ist dieselbe 0,98 wie in evaluate, nicht irgendeine.
+    assert (
+        bootstrap_ci(proba, y, klassen, "coverage_at_precision", target_precision=0.98, rounds=200)
+        == streng
+    )
+
+
+def test_bootstrap_weist_ein_ziel_ausserhalb_von_null_bis_eins_ab() -> None:
+    """Vor der Schleife geprueft: Danach liesse ein unmoegliches Ziel jede Ziehung als
+    entartet gelten, und gemeldet wuerde eine zu duenn besetzte Menge statt des falschen
+    Arguments."""
+    proba, y, klassen = _gemischte_wahrscheinlichkeiten(seed=13, n=60)
+    for ziel in (0.0, 1.0):
+        with pytest.raises(ValueError, match="target_precision"):
+            bootstrap_ci(proba, y, klassen, "macro_f1", target_precision=ziel, rounds=40)
 
 
 # ------------------------------------------------------------------------------- Wächter
