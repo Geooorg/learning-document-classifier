@@ -671,10 +671,32 @@ Alles steht und fällt damit.
   von falschen Vorhersagen? Das misst Trennschärfe unabhängig von der Eichung.
 
 **Coverage@P98 ist die ehrliche Antwort auf „steigt die Konfidenz?"**, weil sie Konfidenz
-und Korrektheit koppelt. Sie lässt sich nicht durch Temperaturspielerei manipulieren: Wer
-alle Zahlen hochskaliert, verschiebt nur die Schwelle mit. Und sie ist unmittelbar
-verständlich — „nach Runde 3 laufen 62 % der Dokumente ohne Mensch durch, nach Runde 8 sind
-es 81 % bei gleicher Präzision" ist eine Aussage, die niemand missverstehen kann.
+und Korrektheit koppelt. Sie lässt sich nicht nach oben manipulieren: τ wird aus denselben
+Daten abgelesen, also verschiebt eine Umskalierung aller Zahlen nur die Schwelle mit. Und
+sie ist unmittelbar verständlich — „nach Runde 3 laufen 62 % der Dokumente ohne Mensch
+durch, nach Runde 8 sind es 81 % bei gleicher Präzision" ist eine Aussage, die niemand
+missverstehen kann.
+
+> **Genauer, als es hier ursprünglich stand** (gemessen in Phase 2, Aufgabe 14).
+> *Unverändert* bleibt Coverage@P98 unter der Temperatur nur bei **zwei** Klassen. Dort ist
+> `max p̂ = σ(z/T)` monoton in `z`, die Reihenfolge der Dokumente bleibt, und die Kennzahl
+> ist exakt invariant. Ab **drei** Klassen ist das Maximum eines Softmax keine monotone
+> Funktion des ursprünglichen Maximums mehr — es hängt vom ganzen Vektor ab, und Dokumente
+> tauschen die Plätze. Gemessen über je 200 Zufallslagen: bei 2 Klassen ändert sich die
+> Reihenfolge in 0 von 200 Fällen, bei 3 und bei 7 Klassen in 200 von 200.
+>
+> Die Aussage trägt trotzdem, nur schwächer als „invariant": Die Kennzahl lässt sich nicht
+> in die *gewünschte* Richtung treiben. Über T von 0,2 bis 5,0, je 40 Seeds, 400 Dokumente:
+>
+> | T | 0,2 | 0,5 | 1,0 | 2,0 | 5,0 | Streuung über Seeds |
+> |---|---|---|---|---|---|---|
+> | 3 Klassen | 0,7015 | 0,7026 | 0,6973 | 0,6777 | 0,6535 | 0,07 |
+> | 7 Klassen | 0,3469 | 0,3436 | 0,3434 | 0,3151 | 0,2876 | 0,10 |
+>
+> Der Gewinn von `T = 1` auf `T = 0,2` beträgt 0,004 bzw. 0,003 und verschwindet im
+> Rauschen zwischen den Seeds; in die andere Richtung fällt die Kennzahl deutlich. Der
+> Unterschied zur mittleren Konfidenz, die sich mit `T = 0,3` trivial auf 0,99 bringen
+> lässt (§ 9.1), bleibt also der entscheidende — aber „invariant" wäre falsch gewesen.
 
 ### 9.4 Das Experiment: Lernkurve gegen Kontrollarm
 
