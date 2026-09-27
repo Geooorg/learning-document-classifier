@@ -91,14 +91,22 @@ def _sichere_vorhersage(
 def _beleg_und_gutschrift() -> tuple[npt.NDArray[np.float64], list[str], tuple[str, ...]]:
     """Fünf Zeilen, zwei Klassen, alle Kennzahlen von Hand ausgerechnet.
 
-    Vorhergesagt wird durchgehend ``RECHNUNG`` mit den Konfidenzen 0,99 / 0,95 / 0,90 /
-    0,85 / 0,80; die vierte Zeile ist in Wahrheit eine ``GUTSCHRIFT``. Die
-    Präfix-Präzisionen sind damit 1, 1, 1, 0,75, 0,8 – die Reihenfolge ist absichtlich
+    Die Konfidenzen sind 0,99 / 0,95 / 0,90 / 0,85 / 0,80, die vierte Zeile ist falsch.
+    Die Präfix-Präzisionen sind damit 1, 1, 1, 0,75, 0,8 – die Reihenfolge ist absichtlich
     nicht monoton, sonst fielen „größte" und „kleinste haltende Abdeckung" zusammen.
+
+    **Die konfidenteste Zeile sagt ``GUTSCHRIFT``, also nicht die Spalte 0.** Vorher stand
+    hier durchgehend ``RECHNUNG``, und die Konfidenz war dadurch versehentlich immer die
+    erste Spalte: Die Mutation ``werte.max(axis=1) → werte[:, 0]`` überlebte den ganzen
+    Test. Seitdem ist ``max`` an die Zeile gebunden und nicht an eine feste Stelle.
+
+    Von Hand: ``RECHNUNG`` 3 richtig, 1 fälschlich (F1 6/7); ``GUTSCHRIFT`` 1 richtig, 1
+    als ``RECHNUNG`` gelesen (F1 2/3); Macro-F1 16/21, Accuracy 4/5.
     """
     konfidenzen = [0.99, 0.95, 0.90, 0.85, 0.80]
-    proba = _proba(["RECHNUNG"] * 5, konfidenzen, KLASSEN_BELEG)
-    y = ["RECHNUNG", "RECHNUNG", "RECHNUNG", "GUTSCHRIFT", "RECHNUNG"]
+    vorhergesagt = ["GUTSCHRIFT", "RECHNUNG", "RECHNUNG", "RECHNUNG", "RECHNUNG"]
+    proba = _proba(vorhergesagt, konfidenzen, KLASSEN_BELEG)
+    y = ["GUTSCHRIFT", "RECHNUNG", "RECHNUNG", "GUTSCHRIFT", "RECHNUNG"]
     return proba, y, KLASSEN_BELEG
 
 
@@ -258,9 +266,9 @@ def test_kennzahlen_auf_von_hand_gerechnetem_beispiel() -> None:
 
     assert m.n == 5
     assert m.accuracy == pytest.approx(0.8)
-    # RECHNUNG: 2*4 / (2*4 + 1 + 0) = 8/9; GUTSCHRIFT: nie vorhergesagt -> 0
-    assert m.per_class_f1 == pytest.approx({"RECHNUNG": 8 / 9, "GUTSCHRIFT": 0.0})
-    assert m.macro_f1 == pytest.approx(4 / 9)
+    # RECHNUNG: 2*3 / (2*3 + 1 + 0) = 6/7; GUTSCHRIFT: 2*1 / (2*1 + 0 + 1) = 2/3
+    assert m.per_class_f1 == pytest.approx({"RECHNUNG": 6 / 7, "GUTSCHRIFT": 2 / 3})
+    assert m.macro_f1 == pytest.approx(16 / 21)
     # Mittel ueber alle 10 Zellen: (2*0.01^2 + 2*0.05^2 + 2*0.10^2 + 2*0.85^2 + 2*0.20^2)/10
     assert m.brier == pytest.approx(0.15502)
     # -(ln .99 + ln .95 + ln .90 + ln .15 + ln .80) / 5
@@ -304,8 +312,8 @@ def test_coverage_ist_null_wenn_kein_ziel_haelt() -> None:
     Die konfidenteste Vorhersage ist hier falsch; die Präfix-Präzisionen sind 0, 0,5, 2/3
     und erreichen 0,98 nie.
     """
-    proba = _proba(["RECHNUNG"] * 3, [0.99, 0.95, 0.90], KLASSEN_BELEG)
-    m = evaluate(proba, ["GUTSCHRIFT", "RECHNUNG", "RECHNUNG"], KLASSEN_BELEG)
+    proba = _proba(["GUTSCHRIFT", "RECHNUNG", "RECHNUNG"], [0.99, 0.95, 0.90], KLASSEN_BELEG)
+    m = evaluate(proba, ["RECHNUNG"] * 3, KLASSEN_BELEG)
     assert m.coverage_at_precision == 0.0
 
 

@@ -235,9 +235,9 @@ def evaluate(
 
     Kommt eine Klasse dagegen in der Wahrheit vor und wird nur nie vorhergesagt, ist ihre
     F1 **0,0 und kein Sonderfall**: Die Trefferquote ist 0, und ``2PR / (P + R)`` geht
-    gegen 0, wie hoch die Präzision auch wäre. ``zero_division=0.0`` wird deshalb
-    ausdrücklich gesetzt und nicht der Voreinstellung überlassen. Genau dieser Fall ist der
-    Grund, warum Macro-F1 die Hauptzahl ist.
+    gegen 0, wie hoch die Präzision auch wäre. ``sklearn`` rechnet das über
+    ``2·TP / (2·TP + FP + FN)`` ohne Division durch null aus; ``zero_division`` kommt dabei
+    gar nicht zum Zug. Genau dieser Fall ist der Grund, warum Macro-F1 die Hauptzahl ist.
     """
     namen = _klassen_pruefen(classes)
     werte = _als_float64(proba)
@@ -270,9 +270,12 @@ def evaluate(
 
     wahrheit = [namen[index] for index in ziel]
     vorhersage = [namen[index] for index in vorhergesagt]
-    # zero_division ausdruecklich gesetzt, siehe Docstring: 0,0 ist hier der Grenzwert
-    # von 2PR / (P + R) bei R = 0, keine Konvention.
-    klassenwerte = f1_score(wahrheit, vorhersage, labels=namen, average=None, zero_division=0.0)
+    # zero_division greift bei F1 nur, wenn 2*TP + FP + FN null ist - genau den Fall faengt
+    # der Waechter darueber schon ab, der Parameter ist hinter ihm also unerreichbar
+    # (nachgemessen: 0.0 gegen 1.0 aendert keinen einzigen Test). Gesetzt wird trotzdem, und
+    # zwar auf nan: Faellt der Waechter einmal weg, ergibt sich ein nan, und die Schranken
+    # von Metrics weisen es ab. Eine stillschweigende 0,0 kaeme durch sie hindurch.
+    klassenwerte = f1_score(wahrheit, vorhersage, labels=namen, average=None, zero_division=np.nan)
     per_class_f1 = {name: float(wert) for name, wert in zip(namen, klassenwerte, strict=True)}
 
     richtig: npt.NDArray[np.bool_] = vorhergesagt == ziel
